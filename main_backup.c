@@ -93,7 +93,9 @@ static void MX_RTC_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+//Function Declare
 void Send_To_ESP32(void);
+
 
 /* --- Makro & Konstanta --- */
 #define MODBUS_BUFFER_SIZE         32
