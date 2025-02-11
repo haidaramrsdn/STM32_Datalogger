@@ -93,9 +93,7 @@ static void MX_RTC_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-//Function Declare
 void Send_To_ESP32(void);
-
 
 /* --- Makro & Konstanta --- */
 #define MODBUS_BUFFER_SIZE         32
@@ -411,7 +409,6 @@ void Update_Time_Buffer(){
  * @brief Interval Inisial
  */
 
-volatile uint16_t to_time_elapsed = 0;
 
 // Fungsi pembantu untuk menentukan jumlah hari dalam sebulan (dengan memperhatikan tahun kabisat)
 uint8_t daysInMonth(uint8_t month, uint16_t year) {
@@ -436,16 +433,16 @@ void Initial_Interval(uint16_t intervalSeconds) {
 	Get_Time_Internal_RTC();
 
 
-	uint16_t currentSeconds = rtcstm.hour * 3600 + rtcstm.minutes * 60 + rtcstm.seconds;
+	uint32_t currentSeconds = rtcstm.hour * 3600 + rtcstm.minutes * 60 + rtcstm.seconds;
 
 
-	uint16_t remainder = currentSeconds % intervalSeconds;
+	uint32_t remainder = currentSeconds % intervalSeconds;
 	uint16_t to_time_elapsed = (remainder == 0 ? intervalSeconds : (intervalSeconds - remainder));
 
 	to_time_elapsed += 2;
 
 
-	uint16_t futureSeconds = currentSeconds + to_time_elapsed;
+	uint32_t futureSeconds = currentSeconds + to_time_elapsed;
 
 	uint8_t daysToAdd = futureSeconds / 86400;  // 86400 detik = 24 jam
 	if (daysToAdd > 0) {
@@ -1257,11 +1254,11 @@ void Send_To_ESP32(){
 
 	// Mengaktifkan sinyal wake-up jika diperlukan
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
-	HAL_Delay(200);
+	HAL_Delay(100);
 
 	// Perbaikan: Mengirim data dengan panjang yang sebenarnya
-	HAL_UART_Transmit(&huart2, esp_tx_buffer, strlen((char*)esp_tx_buffer), 100);
-	HAL_Delay(10);
+	HAL_UART_Transmit(&huart2, esp_tx_buffer, strlen((char*)esp_tx_buffer), 1000);
+	HAL_Delay(100);
 
 	// Mengembalikan status pin wake-up ke semula
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
@@ -1365,7 +1362,7 @@ int main(void)
 	Set_Interval(OK_send);
 	Initial_Interval(interval);
 	ESP_INIT();
-	Set_Alarm_B_Intenal_RTC (15, 10, 0, 1);
+	Set_Alarm_B_Intenal_RTC (17, 7, 0, 1);
 
 
 
