@@ -540,6 +540,36 @@ void Write_SD(const char *filename, uint8_t inval, uint8_t modes,
 		}
 	}
 
+	if (strcmp(filename, "LASTVAL.txt") == 0) {
+		// Buka file dengan mode write dan open-always (jika tidak ada, maka file akan dibuat)
+		FR_Status = f_open(&Fil, filename, FA_WRITE | FA_CREATE_ALWAYS);
+		if (FR_Status == FR_OK) {
+			// Pindahkan pointer ke akhir file agar data baru ditambahkan
+			f_lseek(&Fil, f_size(&Fil));
+
+			// Jika file masih kosong, tulis header terlebih dahulu.
+			if (f_size(&Fil) == 0) {
+				snprintf(RW_Buffer, sizeof(RW_Buffer),
+						"date,suhu,rh,winds,windir,pressure,radiasi,curah_hujan,waterl\r\n");
+				f_write(&Fil, RW_Buffer, strlen(RW_Buffer), &WWC);
+			}
+
+			// Format tanggal dan data (format waktu: "dd/mm/yyyy hh.mm.ss")
+			// Data: suhu, rh, winds, windir, pressure, radiasi, curah_hujan, waterl
+			snprintf(RW_Buffer, sizeof(RW_Buffer),
+					"%02u/%02u/20%02u  %02u.%02u.%02u, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f\r\n",
+					tgl, bln, th, jam, mnt, dtk,
+					suhu, rh, winds, windir, pressure, radiasi, curah_hujan, waterl);
+
+			// Tulis data ke file
+			f_write(&Fil, RW_Buffer, strlen(RW_Buffer), &WWC);
+			f_close(&Fil);
+
+		} else {
+			printf("Error opening file %s, Code: %d\r\n", filename, FR_Status);
+		}
+	}
+
 	// Jika file yang dituju adalah Measured_Params.txt, maka data akan di-append
 	if (strcmp(filename, "MEASURE.txt") == 0) {
 		// Buka file dengan mode write dan open-always (jika tidak ada, maka file akan dibuat)
@@ -570,6 +600,8 @@ void Write_SD(const char *filename, uint8_t inval, uint8_t modes,
 			printf("Error opening file %s, Code: %d\r\n", filename, FR_Status);
 		}
 	}
+
+
 	__enable_irq();
 }
 
@@ -614,7 +646,7 @@ void Read_SD(const char *filename, uint8_t proceed) {
 	}
 
 	// Baca file Measured_Params.txt
-	if (strcmp(filename, "MEASURE.txt") == 0 && proceed==1) {
+	if (strcmp(filename, "LASTVAL.txt") == 0 && proceed==1) {
 		FR_Status = f_open(&Fil, filename, FA_READ);
 		if (FR_Status == FR_OK) {
 			char line[200];
@@ -1036,6 +1068,7 @@ void Send_Recent_Val(void) {
 	Get_SD_Space();
 	NEXTION_SendString("micsd0", space_info);
 	Read_SD("Config.txt", OK_send);
+
 	switch (mode_interval) {
 	case 1: NEXTION_SendString("interval0", "60"); break;
 	case 2: NEXTION_SendString("interval0", "300"); break;
@@ -1048,7 +1081,7 @@ void Send_Recent_Val(void) {
 	case 2: NEXTION_SendString("com0", "LTE"); break;
 	default: break;
 	}
-	Read_SD("MEASURE.txt", OK_send);
+	Read_SD("LASTVAL.txt", OK_send);
 	HAL_Delay(100);
 	NEXTION_SendString("t0", "Pembaruan Terakhir");
 	NEXTION_SendString("time0", time_display_buffer);
@@ -1110,6 +1143,11 @@ void Send_Update_Val(void) {
 	NEXTION_SendString("time0", time_display_buffer);
 
 	Write_SD("MEASURE.txt", 1, 1, rtcstm.dayofmonth, rtcstm.month,
+			rtcstm.year, rtcstm.hour, rtcstm.minutes, rtcstm.seconds,
+			temp_c, humidity_pct, windDir, windSpeed, pressure_mbar, solar_rad,curah_hujan,
+			distance);
+
+	Write_SD("LASTVAL.txt", 1, 1, rtcstm.dayofmonth, rtcstm.month,
 			rtcstm.year, rtcstm.hour, rtcstm.minutes, rtcstm.seconds,
 			temp_c, humidity_pct, windDir, windSpeed, pressure_mbar, solar_rad,curah_hujan,
 			distance);
