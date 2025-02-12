@@ -39,9 +39,9 @@ String urlencode(String str) {
 
 // ===================== Konfigurasi Telegram =====================
 // Token bot yang didapat dari BotFather
-const String botToken = "7421845424:AAFGw4ZqLWrJG-Xi3GPyJG7ietj4FMfNnS4";
+const String botToken = "ciekepo";
 // Ganti dengan chat_id Anda (dapat diperoleh melalui https://api.telegram.org/bot<token>/getUpdates)
-const String chatId = "1209182252";
+const String chatId = "ciekepo";
 
 // ===================== Konfigurasi UART =====================
 #define UART_PORT_NUM         UART_NUM_1
