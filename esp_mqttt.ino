@@ -31,7 +31,7 @@ PubSubClient mqttClient(mqttWiFiClient);
 #define WAKEUP_PIN            GPIO_NUM_4
 
 // Timeout inaktivitas UART (dalam milidetik)
-#define UART_INACTIVITY_TIMEOUT_MS   10000
+#define UART_INACTIVITY_TIMEOUT_MS   20000
 
 // Handle timer inaktivitas
 static TimerHandle_t inactivity_timer = NULL;
@@ -39,7 +39,7 @@ static TimerHandle_t inactivity_timer = NULL;
 // Flag untuk memicu deep sleep (diubah oleh timer callback)
 volatile bool shouldDeepSleep = false;
 
-// Flag untuk memicu update waktu
+// Flag untuk memicu update waktu (dari perintah "timeupdate")
 volatile bool updateTimeRequested = false;
 
 // ===================== WiFi Credentials =====================
@@ -52,6 +52,10 @@ QueueHandle_t uart_queue = NULL;
 // ===================== Variabel Global untuk Data ke MQTT =====================
 volatile bool sendDataToMQTT = false;
 String uartReceivedString = "";
+
+// Variabel untuk mengakumulasi data sensor (karena data dikirim terpisah)
+String sensorDataPart1 = "";
+String sensorDataPart2 = "";
 
 // Fungsi untuk menghubungkan ke MQTT HiveMQ Cloud
 void reconnectMQTT() {
@@ -70,52 +74,19 @@ void reconnectMQTT() {
   }
 }
 
-// Fungsi untuk mempublikasikan data sensor ke topik-topik MQTT
+// Fungsi untuk mempublikasikan data sensor ke topik sensor/cuaca
 void publishSensorData(String data) {
-  // Topik-topik yang akan dipublish
-  const char* topics[9] = {
-    "sensor/waktu",
-    "sensor/suhu",
-    "sensor/kelembaban",
-    "sensor/arah_angin",
-    "sensor/kecepatan_angin",
-    "sensor/tekanan_udara",
-    "sensor/radiasi_matahari",
-    "sensor/curah_hujan",
-    "sensor/water_level"
-  };
-
-  // Pisahkan data berdasarkan koma
-  int startIdx = 0;
-  int commaIdx = -1;
-  String token;
-  for (int i = 0; i < 9; i++) {
-    if (i < 8) {
-      commaIdx = data.indexOf(',', startIdx);
-      if (commaIdx == -1) {
-        Serial.println("Format data tidak sesuai.");
-        return;
-      }
-      token = data.substring(startIdx, commaIdx);
-      startIdx = commaIdx + 1;
-    } else {
-      token = data.substring(startIdx);
-    }
-    token.trim();  // Menghapus spasi di awal dan akhir
-    if(mqttClient.publish(topics[i], token.c_str())){
-      Serial.print("Dipublish ke ");
-      Serial.print(topics[i]);
-      Serial.print(": ");
-      Serial.println(token);
-    } else {
-      Serial.print("Gagal publish ke ");
-      Serial.println(topics[i]);
-    }
+  if (mqttClient.publish("sensor/cuaca", data.c_str())) {
+    Serial.print("Dipublish ke sensor/cuaca: ");
+    Serial.println(data);
+  } else {
+    Serial.println("Gagal publish ke sensor/cuaca");
   }
 }
 
-// Fungsi untuk update waktu dari server BMKG dan publikasikan ke MQTT
+// Fungsi untuk update waktu dari server BMKG dan mengirimkan ke STM32 via UART (tanpa koneksi MQTT)
 void updateTimeFromServer() {
+  // Pastikan WiFi terkoneksi
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Menghubungkan ke WiFi...");
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -188,14 +159,12 @@ void updateTimeFromServer() {
 
             char timeBuffer[50];
             sprintf(timeBuffer, "x%02d %02d %04d %02d %02d %02d", tanggal, bulan, tahun, jam, menit, detik);
-            Serial.print("Waktu yang dikirim: ");
+            Serial.print("Waktu yang didapat: ");
             Serial.println(timeBuffer);
 
-            // Publikasikan waktu ke topik sensor/waktu
-            if (!mqttClient.connected()) {
-              reconnectMQTT();
-            }
-            mqttClient.publish("sensor/waktu", timeBuffer);
+            // Kirim waktu ke STM32 via UART (tanpa koneksi ke HiveMQ Cloud)
+            uart_write_bytes(UART_PORT_NUM, timeBuffer, strlen(timeBuffer));
+            Serial.println("Waktu dikirim ke STM32.");
           } else {
             Serial.println("Tidak menemukan penutup ')' untuk tanggal.");
           }
@@ -238,21 +207,41 @@ void uart_event_task(void *pvParameters) {
             Serial.print("Data diterima: ");
             Serial.write(data_buffer, len);
             Serial.println();
+            
+            String received = String((char*)data_buffer, len);
+            received.trim();
+            
+            // Jika perintah "timeupdate" diterima, lakukan update waktu (tanpa koneksi MQTT)
+            if (received.equals("timeupdate")) {
+              Serial.println("Perintah timeupdate diterima, meminta update waktu.");
+              updateTimeRequested = true;
+            } else {
+              // Akumulasi data sensor yang diterima (misal: data dikirim terpisah)
+              if (received.startsWith("waktu:")) {
+                sensorDataPart1 = received;
+              } else if (received.startsWith("n:")) {
+                sensorDataPart2 = received;
+              } else {
+                // Jika format berbeda, simpan di part1 sebagai fallback
+                sensorDataPart1 = received;
+              }
+              // Jika kedua bagian telah diterima, gabungkan dan set flag untuk publish ke MQTT
+              if (sensorDataPart1.length() > 0 && sensorDataPart2.length() > 0) {
+                String fullSensorData = sensorDataPart1 + sensorDataPart2;
+                uartReceivedString = fullSensorData;
+                sendDataToMQTT = true;
+                // Bersihkan buffer agar siap untuk data selanjutnya
+                sensorDataPart1 = "";
+                sensorDataPart2 = "";
+              }
+            }
+            
             // Reset timer inaktivitas
             if (inactivity_timer != NULL) {
               if (xTimerReset(inactivity_timer, 0) != pdPASS) {
                 Serial.println("Gagal mereset timer inaktivitas");
               }
             }
-
-            if (strstr((char*)data_buffer, "timeupdate") != NULL) {
-              Serial.println("Perintah timeupdate diterima, meminta update waktu.");
-              updateTimeRequested = true;
-            }
-
-            // Konversi buffer ke String
-            uartReceivedString = String((char*)data_buffer, len);
-            sendDataToMQTT = true;
           }
           break;
         }
@@ -367,12 +356,13 @@ void loop() {
   
   if (updateTimeRequested) {
     updateTimeRequested = false;
+    // Update waktu dari server dan kirim ke STM32 (tanpa koneksi ke MQTT)
     xTaskCreatePinnedToCore(updateTimeTask, "updateTimeTask", 8192, NULL, 10, NULL, 0);
   }
   
   if (sendDataToMQTT) {
     sendDataToMQTT = false;
-    // Publikasikan data yang diterima melalui UART ke MQTT
+    // Publikasikan data sensor yang telah lengkap ke broker MQTT
     publishSensorData(uartReceivedString);
   }
   
