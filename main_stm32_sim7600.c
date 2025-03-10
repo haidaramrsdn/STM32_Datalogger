@@ -100,13 +100,14 @@ void Send_To_ESP32(void);
 void Send_To_SIM7600(void);
 void Read_RK400(float ch, uint8_t proceed);
 void Communication_Init(void);
+void Time_Update_ESP_Helper(void);
 
 
 
 /* --- Makro & Konstanta --- */
 #define MODBUS_BUFFER_SIZE         32
 #define UART6_RX_BUFFER_SIZE       30
-#define ESP_BUFFER_SIZE			   100
+#define ESP_BUFFER_SIZE			   256
 #define SIM_BUFFER_SIZE			   256
 #define DEBOUNCE_TIME              50
 
@@ -165,7 +166,7 @@ volatile uint8_t mode_interval = 0;
 volatile uint8_t mode_com = 0;
 volatile uint8_t flag_apply = 0;
 volatile uint8_t flag_delete = 0;
-volatile uint8_t flag_time_update = 0;
+volatile uint8_t flag_time_update_esp_helper = 0;
 volatile uint8_t flag_periodic_request_time_update = 0;
 volatile uint8_t flag_periodic_meas = 0;
 volatile uint8_t flag_tipp = 0;
@@ -1219,6 +1220,7 @@ void Send_Update_Val(void) {
 
 	distance = 9999.9;
 	HR65_Valid =1;
+
 	if (HR65_Valid) {
 		NEXTION_SendFloat("water0", distance);
 	} else {
@@ -1264,8 +1266,6 @@ void Send_Update_Val(void) {
 	printf("Send Update Success\n");
 
 	OK_send = 1;
-	flag_update = 0;
-	flag_periodic_meas = 0;
 }
 
 
@@ -1292,7 +1292,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
 	if (huart->Instance == USART2) {
 
 		if(esp_rx_buffer[0] == 'x'){
-			flag_time_update = 1;
+			flag_time_update_esp_helper = 1;
 		}
 
 	}
@@ -1304,10 +1304,6 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
             sim_rx_buffer[Size] = '\0';
         }
 
-
-		if(sim_rx_buffer[0] == 'x'){
-			flag_time_update = 1;
-		}
 
 		Restart_UART_DMA(huart, sim_rx_buffer, SIM_BUFFER_SIZE);
 	}
@@ -1402,13 +1398,16 @@ void ESP_INIT(){
 
 void Send_To_ESP32(){
 
-	Get_Time_Internal_RTC();
-	snprintf((char*)esp_tx_buffer, ESP_BUFFER_SIZE,
-			"%02u/%02u/20%02u  %02u.%02u.%02u, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f\r\n",
-			rtcstm.dayofmonth, rtcstm.month, rtcstm.year,
-			rtcstm.hour, rtcstm.minutes, rtcstm.seconds,
-			temp_c, humidity_pct, windDir, windSpeed, pressure_mbar,
-			solar_rad, curah_hujan, distance);
+    float latitude = 1.65487;
+    float longitude = 4.99242;
+
+    snprintf((char*)esp_tx_buffer, ESP_BUFFER_SIZE,
+        "waktu:%s,latitude:%.5f,longitude:%.5f,suhu:%.1f,kelembaban:%.1f,arah_angin:%.1f,"
+        "kecepatan_angin:%.1f,tekanan_udara:%.1f,radiasi_matahari:%.1f,curah_hujan:%.1f,"
+        "water_level:%.1f",
+        time_display_buffer, latitude, longitude, temp_c, humidity_pct, windDir,
+        windSpeed, pressure_mbar, solar_rad, curah_hujan, distance);
+
 
 	// Mengaktifkan sinyal wake-up jika diperlukan
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
@@ -1516,8 +1515,11 @@ void Send_To_SIM7600(void) {
 
     // 4. Akuisisi klien MQTT
     printf("\nAT+CMQTTACCQ.........");
-    if (!send_command_with_retry("AT+CMQTTACCQ=0,\"SIMCom_client01\",1\r\n", "OK", 1000))
-        return;
+    if (!send_command_with_retry("AT+CMQTTACCQ=0,\"SIMCom_client01\",1\r\n", "OK", 1000)){
+    	 if (!send_command_with_retry("AT+CMQTTACCQ=0,\"SIMCom_client01\",1\r\n", "+CMQTTACCQ: 0,19", 1000)){
+    		 return;
+    	    }
+    }
 
     // 5. Hubungkan ke broker HiveMQ
     char connect_cmd[256];
@@ -1537,9 +1539,9 @@ void Send_To_SIM7600(void) {
     // Susun payload dengan format: waktu, latitude, longitude, suhu, kelembaban, arah angin,
     // kecepatan angin, tekanan udara, radiasi matahari, curah hujan, water level
     sprintf(payload,
-            "waktu:%s,latitude:%.5f,longitude:%.5f,suhu:%.2f,kelembaban:%.2f,arah_angin:%.2f,"
-            "kecepatan_angin:%.2f,tekanan_udara:%.2f,radiasi_matahari:%.2f,curah_hujan:%.2f,"
-            "water_level:%.2f",
+            "waktu:%s,latitude:%.5f,longitude:%.5f,suhu:%.1f,kelembaban:%.1f,arah_angin:%.1f,"
+            "kecepatan_angin:%.1f,tekanan_udara:%.1f,radiasi_matahari:%.1f,curah_hujan:%.1f,"
+            "water_level:%.1f",
             time_display_buffer, latitude, longitude, temp_c, humidity_pct, windDir,
             windSpeed, pressure_mbar, solar_rad, curah_hujan, distance);
 
@@ -1560,7 +1562,7 @@ void Send_To_SIM7600(void) {
 
     // Publikasikan data
     printf("\nAT+CMQTTPUB.........");
-    if (!send_command_with_retry("AT+CMQTTPUB=0,1,60\r\n", "+CMQTTPUB: 0,0", 1000))
+    if (!send_command_with_retry("AT+CMQTTPUB=0,1,60\r\n", "+CMQTTPUB: 0,0", 2000))
         return;
 
     // 7. Putuskan koneksi dari broker
@@ -1579,9 +1581,79 @@ void Send_To_SIM7600(void) {
         return;
 }
 
+void Request_Update_Time_From_SIM7600(void)
+{
+    printf("\nAT+CGDCONT=1,\"IP\",\"M2MINTERNET\".........");
+    send_command_with_retry("AT+CGDCONT=1,\"IP\",\"M2MINTERNET\"\r\n", "OK", 10000);
+
+    printf("\nAT+CSSLCFG.........");
+    if (!send_command_with_retry("AT+CSSLCFG=\"enableSNI\",0,1\r\n", "OK", 1000))
+        return;
+
+    printf("\nAT+HTTPINIT.........");
+    send_command_with_retry("AT+HTTPINIT\r\n", "OK", 500);
+
+    printf("\nAT+HTTPPARA=jam.bmkg.go.id.........");
+    send_command_with_retry("AT+HTTPPARA=\"URL\",\"https://jam.bmkg.go.id/JamServer.php\"\r\n", "OK", 2000);
+
+    printf("\nAT+HTTPPARA=CID.........");
+    send_command_with_retry("AT+HTTPPARA=\"CID\",1\r\n", "OK", 2000);
+
+    printf("\nAT+HTTPACTION.........");
+    send_command_with_retry("AT+HTTPACTION=0\r\n", "+HTTPACTION: 0,200", 5000);
+
+
+
+    HAL_Delay(100);
+
+    printf("\nAT+HTTPREAD.........");
+
+    if(send_command_with_retry("AT+HTTPREAD=0,150\r\n", "OK", 5000)){
+    	uint8_t tgl, bulan, jam, menit, detik;
+    	uint16_t tahun;
+    	wait_for("new Date(", 10000);
+    	char *pDate = strstr((char*)sim_rx_buffer, "new Date(");
+    	if (pDate != NULL)
+    	{
+    	    // Pindahkan pointer ke awal angka-angka (setelah "new Date(")
+
+    	    pDate += strlen("new Date(");
+    	    HAL_Delay(100);
+
+    		tgl   = (pDate[10]  - '0') * 10 + (pDate[11]  - '0');
+    		bulan = (pDate[5]  - '0') * 10 + (pDate[6]  - '0');
+    		tahun = (pDate[0]  - '0') * 1000 + (pDate[1] - '0') * 100
+    				+ (pDate[2]  - '0') * 10   + (pDate[3] - '0');
+    		jam   = (pDate[13] - '0') * 10 + (pDate[14] - '0');
+    		menit = (pDate[16] - '0') * 10 + (pDate[17] - '0');
+    		detik = (pDate[19] - '0') * 10 + (pDate[20] - '0');
+
+            printf("Tanggal: %02d-%02d-%04d\n", tgl, bulan, tahun);
+            printf("Waktu: %02d:%02d:%02d\n", jam, menit, detik);
+
+        	Set_Time_DS3231(detik, menit, jam, 1, tgl, bulan, tahun);
+        	Set_Time_Internal_RTC(detik, menit, jam, 1, tgl, bulan, tahun);
+
+
+    	}
+    	else
+    	{
+    	    printf("Substring 'new Date(' tidak ditemukan dalam buffer.\n");
+    	}
+
+    }
+
+
+    printf("\nAT+HTTPTERM.........");
+    send_command_with_retry("AT+HTTPTERM\r\n", "OK", 5000);
+
+    Restart_UART_DMA(&huart4, sim_rx_buffer, SIM_BUFFER_SIZE);
+}
+
+
 #endif
 
-void Time_Update(){
+void Time_Update_ESP_Helper(){
 	uint8_t tgl, bulan, jam, menit, detik;
 	uint16_t tahun;
 
@@ -1595,23 +1667,15 @@ void Time_Update(){
 		detik = (esp_rx_buffer[18] - '0') * 10 + (esp_rx_buffer[19] - '0');
 		Restart_UART_DMA(&huart2, esp_rx_buffer, ESP_BUFFER_SIZE);
 	}
-	if(mode_com==2){
-		tgl   = (sim_rx_buffer[1]  - '0') * 10 + (sim_rx_buffer[2]  - '0');
-		bulan = (sim_rx_buffer[4]  - '0') * 10 + (sim_rx_buffer[5]  - '0');
-		tahun = (sim_rx_buffer[7]  - '0') * 1000 + (sim_rx_buffer[8] - '0') * 100
-				+ (sim_rx_buffer[9]  - '0') * 10   + (sim_rx_buffer[10] - '0');
-		jam   = (sim_rx_buffer[12] - '0') * 10 + (sim_rx_buffer[13] - '0');
-		menit = (sim_rx_buffer[15] - '0') * 10 + (sim_rx_buffer[16] - '0');
-		detik = (sim_rx_buffer[18] - '0') * 10 + (sim_rx_buffer[19] - '0');
-		Restart_UART_DMA(&huart4, sim_rx_buffer, SIM_BUFFER_SIZE);
 
-	}
+    printf("Tanggal: %02d-%02d-%04d\n", tgl, bulan, tahun);
+    printf("Waktu: %02d:%02d:%02d\n", jam, menit, detik);
 
 	Set_Time_DS3231(detik, menit, jam, 1, tgl, bulan, tahun);
 	Set_Time_Internal_RTC(detik, menit, jam, 1, tgl, bulan, tahun);
 
 
-	flag_time_update = 0;
+	flag_time_update_esp_helper = 0;
 
 }
 
@@ -1690,7 +1754,7 @@ int main(void)
 	Send_Initial_Val();
 	Set_Interval(OK_send);
 	Initial_Interval(interval);
-	Set_Alarm_B_Intenal_RTC (8, 2, 25, 1);
+	Set_Alarm_B_Intenal_RTC (15, 15, 35, 1);
 	Communication_Init();
 
 
@@ -1703,9 +1767,9 @@ int main(void)
 	/* USER CODE BEGIN WHILE */
 	while (1)
 	{
-		HAL_SuspendTick();
-		HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
-		HAL_ResumeTick();
+//		HAL_SuspendTick();
+//		HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
+//		HAL_ResumeTick();
 
 		if (flag_tipp)
 		{
@@ -1718,9 +1782,11 @@ int main(void)
 		}
 
 		if (flag_update) {
+			flag_update = 0;
 			Send_Update_Val();
 
 		}
+
 		if (flag_periodic_meas) {
 			flag_periodic_meas = 0;
 			Send_Update_Val();
@@ -1751,12 +1817,12 @@ int main(void)
 				Request_Update_Time_From_ESP32();
 			}
 			if (mode_com==2){
-				//from modem
+				Request_Update_Time_From_SIM7600();
 			}
 
 		}
-		if(flag_time_update){
-			Time_Update();
+		if(flag_time_update_esp_helper){
+			Time_Update_ESP_Helper();
 		}
 		/* USER CODE END WHILE */
 
