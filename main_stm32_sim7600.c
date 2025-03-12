@@ -151,10 +151,13 @@ volatile float pressure_mbar = 0.0f;
 volatile float distance = 0.0f;
 volatile float curah_hujan = 0.0f;
 volatile float solar_rad = 0.0f;
+volatile float Latitude = 0.0f;
+volatile float Longitude = 0.0f;
 
 
 
 volatile uint8_t OK_send = 1;
+volatile uint8_t OK_Update = 1;
 volatile uint16_t sim_rxSize = 0;
 volatile uint8_t flag_update = 0;
 volatile uint8_t flag_recentval = 0;
@@ -452,8 +455,6 @@ void Initial_Interval(uint16_t intervalSeconds) {
 	uint32_t remainder = currentSeconds % intervalSeconds;
 	uint16_t to_time_elapsed = (remainder == 0 ? intervalSeconds : (intervalSeconds - remainder));
 
-	to_time_elapsed += 2;
-
 
 	uint32_t futureSeconds = currentSeconds + to_time_elapsed;
 
@@ -521,7 +522,8 @@ void Write_SD(const char *filename, uint8_t inval, uint8_t modes,
 		uint8_t tgl, uint8_t bln, uint8_t th,
 		uint8_t jam, uint8_t mnt, uint8_t dtk,
 		float suhu, float rh, float windir, float winds,
-		float pressure, float radiasi, float curah_hujan, float waterl) {
+		float pressure, float radiasi, float curah_hujan, float waterl,
+		float lat, float lot) {
 	FATFS FatFs;
 	FIL Fil;
 	FRESULT FR_Status;
@@ -580,6 +582,19 @@ void Write_SD(const char *filename, uint8_t inval, uint8_t modes,
 			printf("Error opening file %s, Code: %d\r\n", filename, FR_Status);
 		}
 	}
+
+	if (strcmp(filename, "LOCATION.txt") == 0) {
+
+		snprintf(RW_Buffer, sizeof(RW_Buffer), "Latitude: %.5f, Longitude: %.5f", lat, lot);
+
+		FR_Status = f_open(&Fil, filename, FA_WRITE | FA_CREATE_ALWAYS);
+		if (FR_Status == FR_OK) {
+			f_write(&Fil, RW_Buffer, strlen(RW_Buffer), &WWC);
+			f_close(&Fil);
+		} else {
+			printf("Error opening file %s, Code: %d\r\n", filename, FR_Status);
+		}
+		}
 
 	// Jika file yang dituju adalah Measured_Params.txt, maka data akan di-append
 	if (strcmp(filename, "MEASURE.txt") == 0) {
@@ -646,6 +661,28 @@ void Read_SD(const char *filename, uint8_t proceed) {
 					mode_interval = (uint8_t)tmp_interval;
 					mode_com = (uint8_t)tmp_mode;
 					//                    printf("Interval: %u, Mode: %u\n", mode_interval, mode_com);
+				} else {
+					printf("Failed to parse configuration\n");
+				}
+			}
+			f_close(&Fil);
+		} else {
+			printf("Error opening file %s, Code: %d\r\n", filename, FR_Status);
+		}
+	}
+
+	if (strcmp(filename, "LOCATION.txt") == 0 && proceed==1) {
+		FR_Status = f_open(&Fil, filename, FA_READ);
+		if (FR_Status == FR_OK) {
+			if (f_read(&Fil, RW_Buffer, sizeof(RW_Buffer) - 1, &RWC) == FR_OK && RWC > 0) {
+				RW_Buffer[RWC] = '\0';  // Pastikan string null-terminated
+
+				// Parsing string konfigurasi
+				float tmp_lat, tmp_lot;
+				if (sscanf(RW_Buffer, "Latitude: %f, Longitude: %f", &tmp_lat, &tmp_lot) == 2) {
+					// Misalnya, simpan ke variabel global mode_interval dan mode_com
+					Latitude = tmp_lat;
+					Longitude = tmp_lot;
 				} else {
 					printf("Failed to parse configuration\n");
 				}
@@ -1081,19 +1118,19 @@ void Set_Apply(uint8_t apply_1, uint8_t inval, uint8_t comm) {
 	if (apply_1 == 1) {
 		// Jika nilai interval tidak nol, perbarui interval
 		if(inval != 0 && comm != 0){
-			Write_SD("Config.txt", inval, comm, 1,1,1,1,1,1,1,1,1,1,1,1,1,1);
+			Write_SD("Config.txt", inval, comm, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1);
 			HAL_Delay(100);
 			printf("Set Interval and Communication Method Success Success\n");
 		} else if (inval != 0) {
 			// Hitung interval dalam detik (pastikan satuan konsisten)
 			printf("Set Interval Success\n");
 			// Panggil Write_SD dengan nilai interval yang baru dan NO_CHANGE untuk parameter komunikasi
-			Write_SD("Config.txt", inval, NO_CHANGE, 1,1,1,1,1,1,1,1,1,1,1,1,1,1);
+			Write_SD("Config.txt", inval, NO_CHANGE, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1);
 			HAL_Delay(100);
 		}else if (comm != 0) {
 			printf("Set Communication Method Success\n");
 			// Panggil Write_SD dengan NO_CHANGE untuk interval dan nilai komunikasi yang baru
-			Write_SD("Config.txt", NO_CHANGE, comm, 1,1,1,1,1,1,1,1,1,1,1,1,1,1);
+			Write_SD("Config.txt", NO_CHANGE, comm, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1);
 			HAL_Delay(100);
 		}
 	}
@@ -1181,6 +1218,9 @@ void Send_Initial_Val(void) {
 	NEXTION_SendFloat("water0", distance);
 	NEXTION_SendFloat("sunrad0", solar_rad);
 
+	Read_SD("LOCATION.txt", OK_send);
+	HAL_Delay(100);
+
 
 	printf("Send Recent Val Success\n");
 	flag_recentval = 0;
@@ -1189,83 +1229,89 @@ void Send_Initial_Val(void) {
 /**
  * @brief Meng-update nilai sensor dan menampilkan hasil ke Nextion.
  */
-void Send_Update_Val(void) {
-	OK_send = 0;
+void Send_Update_Val(uint8_t Acc) {
 
-	NEXTION_SendString("time0", "Memuat Pembaruan..");
+	if(Acc){
+		flag_periodic_meas = 0;
+		OK_send = 0;
+
+		NEXTION_SendString("time0", "Memuat Pembaruan..");
+
+		Read_RK400(curah_hujan, 1);
+		Read_HR65();
+		Read_RK900();
+		Read_SHT20();
+		Read_PYR20();
+
+		Read_SD("LOCATION.txt", OK_send);
 
 
-	Read_RK400(curah_hujan, 1);
-	Read_HR65();
-	Read_RK900();
-	Read_SHT20();
-	Read_PYR20();
+		RK900_Valid = 1;
+		if (RK900_Valid) {
+			NEXTION_SendFloat("winds0", windSpeed);
+			NEXTION_SendFloat("windd0", windDir);
+			NEXTION_SendFloat("suhu0", temp_c);
+			NEXTION_SendFloat("rh0", humidity_pct);
+			NEXTION_SendFloat("press0", pressure_mbar);
+		} else {
+			NEXTION_SendString("winds0", "null");
+			NEXTION_SendString("windd0", "null");
+			NEXTION_SendString("suhu0", "null");
+			NEXTION_SendString("rh0", "null");
+			NEXTION_SendString("press0", "null");
+		}
 
 
-	RK900_Valid = 1;
-	if (RK900_Valid) {
-		NEXTION_SendFloat("winds0", windSpeed);
-		NEXTION_SendFloat("windd0", windDir);
-		NEXTION_SendFloat("suhu0", temp_c);
-		NEXTION_SendFloat("rh0", humidity_pct);
-		NEXTION_SendFloat("press0", pressure_mbar);
-	} else {
-		NEXTION_SendString("winds0", "null");
-		NEXTION_SendString("windd0", "null");
-		NEXTION_SendString("suhu0", "null");
-		NEXTION_SendString("rh0", "null");
-		NEXTION_SendString("press0", "null");
+		distance = 9999.9;
+		HR65_Valid =1;
+
+		if (HR65_Valid) {
+			NEXTION_SendFloat("water0", distance);
+		} else {
+			NEXTION_SendString("water0", "null");
+		}
+		if(PYR20_Valid){
+			NEXTION_SendFloat("sunrad0", solar_rad);
+		}else{
+			NEXTION_SendString("sunrad0", "null");
+		}
+
+
+		Update_Time_Buffer();
+
+		Write_SD("MEASURE.txt", 1, 1, rtcstm.dayofmonth, rtcstm.month,
+				rtcstm.year, rtcstm.hour, rtcstm.minutes, rtcstm.seconds,
+				temp_c, humidity_pct, windDir, windSpeed, pressure_mbar, solar_rad,curah_hujan,
+				distance,1,1);
+
+		Write_SD("LASTVAL.txt", 1, 1, rtcstm.dayofmonth, rtcstm.month,
+				rtcstm.year, rtcstm.hour, rtcstm.minutes, rtcstm.seconds,
+				temp_c, humidity_pct, windDir, windSpeed, pressure_mbar, solar_rad,curah_hujan,
+				distance,1,1);
+		HAL_Delay(100);
+
+
+
+		if(mode_com==1){
+			NEXTION_SendString("time0", "Mengirim Data - Wi-Fi");
+			printf("Sending via Wi-Fi\n");
+			Send_To_ESP32();
+		}
+		if(mode_com==2){
+			NEXTION_SendString("time0", "Mengirim Data - LTE");
+			printf("Sending via Selular\n");
+			Send_To_SIM7600();
+		}
+
+		NEXTION_SendString("t0", "Pembaruan Terakhir");
+		NEXTION_SendString("time0", time_display_buffer);
+
+
+		printf("Send Update Success\n");
+
+		OK_send = 1;
 	}
 
-
-	distance = 9999.9;
-	HR65_Valid =1;
-
-	if (HR65_Valid) {
-		NEXTION_SendFloat("water0", distance);
-	} else {
-		NEXTION_SendString("water0", "null");
-	}
-	if(PYR20_Valid){
-		NEXTION_SendFloat("sunrad0", solar_rad);
-	}else{
-		NEXTION_SendString("sunrad0", "null");
-	}
-
-
-	Update_Time_Buffer();
-
-	Write_SD("MEASURE.txt", 1, 1, rtcstm.dayofmonth, rtcstm.month,
-			rtcstm.year, rtcstm.hour, rtcstm.minutes, rtcstm.seconds,
-			temp_c, humidity_pct, windDir, windSpeed, pressure_mbar, solar_rad,curah_hujan,
-			distance);
-
-	Write_SD("LASTVAL.txt", 1, 1, rtcstm.dayofmonth, rtcstm.month,
-			rtcstm.year, rtcstm.hour, rtcstm.minutes, rtcstm.seconds,
-			temp_c, humidity_pct, windDir, windSpeed, pressure_mbar, solar_rad,curah_hujan,
-			distance);
-	HAL_Delay(100);
-
-
-
-	if(mode_com==1){
-		NEXTION_SendString("time0", "Mengirim Data - Wi-Fi");
-		printf("Sending via Wi-Fi\n");
-		Send_To_ESP32();
-	}
-	if(mode_com==2){
-		NEXTION_SendString("time0", "Mengirim Data - LTE");
-		printf("Sending via Selular\n");
-		Send_To_SIM7600();
-	}
-
-	NEXTION_SendString("t0", "Pembaruan Terakhir");
-	NEXTION_SendString("time0", time_display_buffer);
-
-
-	printf("Send Update Success\n");
-
-	OK_send = 1;
 }
 
 
@@ -1300,9 +1346,9 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
 		flag_modbus = 1;
 	}
 	if (huart->Instance == UART4) {
-        if(Size < SIM_BUFFER_SIZE) {
-            sim_rx_buffer[Size] = '\0';
-        }
+		if(Size < SIM_BUFFER_SIZE) {
+			sim_rx_buffer[Size] = '\0';
+		}
 
 
 		Restart_UART_DMA(huart, sim_rx_buffer, SIM_BUFFER_SIZE);
@@ -1398,15 +1444,13 @@ void ESP_INIT(){
 
 void Send_To_ESP32(){
 
-    float latitude = 1.65487;
-    float longitude = 4.99242;
 
-    snprintf((char*)esp_tx_buffer, ESP_BUFFER_SIZE,
-        "waktu:%s,latitude:%.5f,longitude:%.5f,suhu:%.1f,kelembaban:%.1f,arah_angin:%.1f,"
-        "kecepatan_angin:%.1f,tekanan_udara:%.1f,radiasi_matahari:%.1f,curah_hujan:%.1f,"
-        "water_level:%.1f",
-        time_display_buffer, latitude, longitude, temp_c, humidity_pct, windDir,
-        windSpeed, pressure_mbar, solar_rad, curah_hujan, distance);
+	snprintf((char*)esp_tx_buffer, ESP_BUFFER_SIZE,
+			"waktu:%s,latitude:%.5f,longitude:%.5f,suhu:%.1f,kelembaban:%.1f,arah_angin:%.1f,"
+			"kecepatan_angin:%.1f,tekanan_udara:%.1f,radiasi_matahari:%.1f,curah_hujan:%.1f,"
+			"water_level:%.1f",
+			time_display_buffer, Latitude, Longitude, temp_c, humidity_pct, windDir,
+			windSpeed, pressure_mbar, solar_rad, curah_hujan, distance);
 
 
 	// Mengaktifkan sinyal wake-up jika diperlukan
@@ -1422,6 +1466,7 @@ void Send_To_ESP32(){
 }
 
 void Request_Update_Time_From_ESP32(){
+	OK_Update = 0;
 	Restart_UART_DMA(&huart2, esp_rx_buffer, ESP_BUFFER_SIZE);
 	sprintf((char*)esp_tx_buffer, "timeupdate");
 	// Mengaktifkan sinyal wake-up jika diperlukan
@@ -1429,233 +1474,15 @@ void Request_Update_Time_From_ESP32(){
 	HAL_Delay(100);
 	HAL_UART_Transmit(&huart2, esp_tx_buffer, strlen((char*)esp_tx_buffer), 100);
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+	OK_Update = 1;
 
 }
-
-#endif
-
-#if 1 //ALL ABOUT SIM7600
-
-
-#define MAX_RETRIES     3
-
-// Fungsi untuk mengirim perintah AT dengan membersihkan buffer terlebih dahulu
-static void send_command(const char* cmd) {
-    HAL_UART_DMAStop(&huart4);
-    memset(sim_rx_buffer, 0, SIM_BUFFER_SIZE);
-    Restart_UART_DMA(&huart4, sim_rx_buffer, SIM_BUFFER_SIZE);
-    HAL_UART_Transmit(&huart4, (uint8_t*)cmd, strlen(cmd), HAL_MAX_DELAY);
-}
-
-// Fungsi untuk menunggu respons tertentu dengan polling isi buffer DMA
-static int wait_for(const char* expected, uint32_t timeout) {
-    uint32_t start = HAL_GetTick();
-    while (HAL_GetTick() - start < timeout) {
-        // Periksa apakah respons yang diharapkan muncul dalam buffer
-        if (strstr((char*)sim_rx_buffer, expected) != NULL) {
-            printf("Sukses\n");
-            return 1;
-        }
-    }
-    printf("Error: Tidak menemukan '%s'. Response: %s\n", expected, sim_rx_buffer);
-    return 0;
-}
-
-// Fungsi untuk mengirim data MQTT (untuk topik dan payload) dengan mekanisme retry
-static int send_mqtt_data(const char* cmd, const char* data, int len) {
-    char full_cmd[50];
-    sprintf(full_cmd, "%s\r\n", cmd);
-    int retries = 0;
-    while (retries < MAX_RETRIES) {
-        send_command(full_cmd);
-        if (wait_for(">", 5000)) {
-            HAL_UART_Transmit(&huart4, (uint8_t*)data, len, HAL_MAX_DELAY);
-            if (wait_for("OK", 5000))
-                return 1;
-        }
-        retries++;
-        printf("Retrying command: %s (attempt %d)\n", cmd, retries + 1);
-    }
-    return 0;
-}
-
-// Fungsi untuk mengirim perintah AT dan menunggu respons dengan mekanisme retry
-static int send_command_with_retry(const char* cmd, const char* expected, uint32_t timeout) {
-    int retries = 0;
-    while (retries < MAX_RETRIES) {
-        send_command(cmd);
-        if (wait_for(expected, timeout))
-            return 1;
-        retries++;
-        printf("Retrying command: %s (attempt %d)\n", cmd, retries + 1);
-    }
-    return 0;
-}
-
-// Fungsi utama untuk mengirim data parameter cuaca ke SIM7600 melalui MQTT
-void Send_To_SIM7600(void) {
-    // 1. Set APN
-    printf("\nAT+CGDCONT=1,\"IP\",\"M2MINTERNET\".........");
-    if (!send_command_with_retry("AT+CGDCONT=1,\"IP\",\"M2MINTERNET\"\r\n", "OK", 10000))
-        return;
-
-    // 2. Konfigurasi SSL
-    printf("\nAT+CSSLCFG.........");
-    if (!send_command_with_retry("AT+CSSLCFG=\"enableSNI\",0,1\r\n", "OK", 1000))
-        return;
-
-    // 3. Mulai layanan MQTT
-    printf("\nAT+CMQTTSTART.........");
-    if (!send_command_with_retry("AT+CMQTTSTART\r\n", "OK", 1000)){
-    	if(!send_command_with_retry("AT+CMQTTSTART\r\n", "+CMQTTSTART: 23", 1000)){
-    		return;
-    	}
-    }
-
-
-    // 4. Akuisisi klien MQTT
-    printf("\nAT+CMQTTACCQ.........");
-    if (!send_command_with_retry("AT+CMQTTACCQ=0,\"SIMCom_client01\",1\r\n", "OK", 1000)){
-    	 if (!send_command_with_retry("AT+CMQTTACCQ=0,\"SIMCom_client01\",1\r\n", "+CMQTTACCQ: 0,19", 1000)){
-    		 return;
-    	    }
-    }
-
-    // 5. Hubungkan ke broker HiveMQ
-    char connect_cmd[256];
-    sprintf(connect_cmd,
-            "AT+CMQTTCONNECT=0,\"tcp://a51ad753198b41b3a4c2f4488d3e409d.s1.eu.hivemq.cloud:8883\",60,1,\"haidaramrurusdan\",\"h18082746R\"\r\n");
-    printf("\nAT+CMQTTCONNECT.........");
-    if (!send_command_with_retry(connect_cmd, "+CMQTTCONNECT: 0,0", 10000))
-        return;
-
-    // 6. Kirim data parameter cuaca ke topik sensor/cuaca
-    char payload[256];
-    char cmd[50];
-    char topic[] = "sensor/cuaca";
-    float latitude = 1.65487;
-    float longitude = 4.99242;
-
-    // Susun payload dengan format: waktu, latitude, longitude, suhu, kelembaban, arah angin,
-    // kecepatan angin, tekanan udara, radiasi matahari, curah hujan, water level
-    sprintf(payload,
-            "waktu:%s,latitude:%.5f,longitude:%.5f,suhu:%.1f,kelembaban:%.1f,arah_angin:%.1f,"
-            "kecepatan_angin:%.1f,tekanan_udara:%.1f,radiasi_matahari:%.1f,curah_hujan:%.1f,"
-            "water_level:%.1f",
-            time_display_buffer, latitude, longitude, temp_c, humidity_pct, windDir,
-            windSpeed, pressure_mbar, solar_rad, curah_hujan, distance);
-
-    int topic_len = strlen(topic);
-    int payload_len = strlen(payload);
-
-    // Kirim topik MQTT
-    sprintf(cmd, "AT+CMQTTTOPIC=0,%d", topic_len);
-    printf("\nAT+CMQTTTOPIC.........");
-    if (!send_mqtt_data(cmd, topic, topic_len))
-        return;
-
-    // Kirim payload MQTT
-    sprintf(cmd, "AT+CMQTTPAYLOAD=0,%d", payload_len);
-    printf("\nAT+CMQTTPAYLOAD.........");
-    if (!send_mqtt_data(cmd, payload, payload_len))
-        return;
-
-    // Publikasikan data
-    printf("\nAT+CMQTTPUB.........");
-    if (!send_command_with_retry("AT+CMQTTPUB=0,1,60\r\n", "+CMQTTPUB: 0,0", 2000))
-        return;
-
-    // 7. Putuskan koneksi dari broker
-    printf("\nAT+CMQTTDISC.........");
-    if (!send_command_with_retry("AT+CMQTTDISC=0,120\r\n", "OK", 1000))
-        return;
-
-    // 8. Lepaskan klien MQTT
-    printf("\nAT+CMQTTREL.........");
-    if (!send_command_with_retry("AT+CMQTTREL=0\r\n", "OK", 1000))
-        return;
-
-    // 9. Hentikan layanan MQTT
-    printf("\nAT+CMQTTSTOP.........");
-    if (!send_command_with_retry("AT+CMQTTSTOP\r\n", "OK", 1000))
-        return;
-}
-
-void Request_Update_Time_From_SIM7600(void)
-{
-    printf("\nAT+CGDCONT=1,\"IP\",\"M2MINTERNET\".........");
-    send_command_with_retry("AT+CGDCONT=1,\"IP\",\"M2MINTERNET\"\r\n", "OK", 10000);
-
-    printf("\nAT+CSSLCFG.........");
-    if (!send_command_with_retry("AT+CSSLCFG=\"enableSNI\",0,1\r\n", "OK", 1000))
-        return;
-
-    printf("\nAT+HTTPINIT.........");
-    send_command_with_retry("AT+HTTPINIT\r\n", "OK", 500);
-
-    printf("\nAT+HTTPPARA=jam.bmkg.go.id.........");
-    send_command_with_retry("AT+HTTPPARA=\"URL\",\"https://jam.bmkg.go.id/JamServer.php\"\r\n", "OK", 2000);
-
-    printf("\nAT+HTTPPARA=CID.........");
-    send_command_with_retry("AT+HTTPPARA=\"CID\",1\r\n", "OK", 2000);
-
-    printf("\nAT+HTTPACTION.........");
-    send_command_with_retry("AT+HTTPACTION=0\r\n", "+HTTPACTION: 0,200", 5000);
-
-
-
-    HAL_Delay(100);
-
-    printf("\nAT+HTTPREAD.........");
-
-    if(send_command_with_retry("AT+HTTPREAD=0,150\r\n", "OK", 5000)){
-    	uint8_t tgl, bulan, jam, menit, detik;
-    	uint16_t tahun;
-    	wait_for("new Date(", 10000);
-    	char *pDate = strstr((char*)sim_rx_buffer, "new Date(");
-    	if (pDate != NULL)
-    	{
-    	    // Pindahkan pointer ke awal angka-angka (setelah "new Date(")
-
-    	    pDate += strlen("new Date(");
-    	    HAL_Delay(100);
-
-    		tgl   = (pDate[10]  - '0') * 10 + (pDate[11]  - '0');
-    		bulan = (pDate[5]  - '0') * 10 + (pDate[6]  - '0');
-    		tahun = (pDate[0]  - '0') * 1000 + (pDate[1] - '0') * 100
-    				+ (pDate[2]  - '0') * 10   + (pDate[3] - '0');
-    		jam   = (pDate[13] - '0') * 10 + (pDate[14] - '0');
-    		menit = (pDate[16] - '0') * 10 + (pDate[17] - '0');
-    		detik = (pDate[19] - '0') * 10 + (pDate[20] - '0');
-
-            printf("Tanggal: %02d-%02d-%04d\n", tgl, bulan, tahun);
-            printf("Waktu: %02d:%02d:%02d\n", jam, menit, detik);
-
-        	Set_Time_DS3231(detik, menit, jam, 1, tgl, bulan, tahun);
-        	Set_Time_Internal_RTC(detik, menit, jam, 1, tgl, bulan, tahun);
-
-
-    	}
-    	else
-    	{
-    	    printf("Substring 'new Date(' tidak ditemukan dalam buffer.\n");
-    	}
-
-    }
-
-
-    printf("\nAT+HTTPTERM.........");
-    send_command_with_retry("AT+HTTPTERM\r\n", "OK", 5000);
-
-    Restart_UART_DMA(&huart4, sim_rx_buffer, SIM_BUFFER_SIZE);
-}
-
-
-#endif
 
 void Time_Update_ESP_Helper(){
+	OK_Update = 0;
 	uint8_t tgl, bulan, jam, menit, detik;
 	uint16_t tahun;
+
 
 	if(mode_com==1){
 		tgl   = (esp_rx_buffer[1]  - '0') * 10 + (esp_rx_buffer[2]  - '0');
@@ -1668,16 +1495,375 @@ void Time_Update_ESP_Helper(){
 		Restart_UART_DMA(&huart2, esp_rx_buffer, ESP_BUFFER_SIZE);
 	}
 
-    printf("Tanggal: %02d-%02d-%04d\n", tgl, bulan, tahun);
-    printf("Waktu: %02d:%02d:%02d\n", jam, menit, detik);
+	printf("Tanggal: %02d-%02d-%04d\n", tgl, bulan, tahun);
+	printf("Waktu: %02d:%02d:%02d\n", jam, menit, detik);
 
 	Set_Time_DS3231(detik, menit, jam, 1, tgl, bulan, tahun);
 	Set_Time_Internal_RTC(detik, menit, jam, 1, tgl, bulan, tahun);
 
 
 	flag_time_update_esp_helper = 0;
+	OK_Update = 1;
 
 }
+
+
+#endif
+
+#if 1 //ALL ABOUT SIM7600
+
+
+#define MAX_RETRIES     3
+
+
+static void send_command(const char* cmd) {
+	HAL_UART_DMAStop(&huart4);
+	memset(sim_rx_buffer, 0, SIM_BUFFER_SIZE);
+	Restart_UART_DMA(&huart4, sim_rx_buffer, SIM_BUFFER_SIZE);
+	HAL_UART_Transmit(&huart4, (uint8_t*)cmd, strlen(cmd), HAL_MAX_DELAY);
+}
+
+
+static int wait_for(const char* expected, uint32_t timeout) {
+	uint32_t start = HAL_GetTick();
+	while (HAL_GetTick() - start < timeout) {
+		// Periksa apakah respons yang diharapkan muncul dalam buffer
+		if (strstr((char*)sim_rx_buffer, expected) != NULL) {
+			printf("Sukses\n");
+			return 1;
+		}
+	}
+	printf("Error: Tidak menemukan '%s'. Response: %s\n", expected, sim_rx_buffer);
+	return 0;
+}
+
+static int wait_for_extended(const char* expected1, const char* expected2, const char* not_expected, uint32_t timeout) {
+	uint32_t start = HAL_GetTick();
+
+	while (HAL_GetTick() - start < timeout) {
+		// Periksa apakah respons yang diharapkan muncul dalam buffer
+		HAL_Delay(100);
+		if ((strstr((char*)sim_rx_buffer, expected1) != NULL || strstr((char*)sim_rx_buffer, expected2) != NULL) &&
+		    strstr((char*)sim_rx_buffer, not_expected) == NULL) {
+		    printf("Sukses\n");
+		    printf("Response: %s\n", sim_rx_buffer);
+		    return 1;
+		}else if(strstr((char*)sim_rx_buffer, not_expected) == NULL){
+			printf("Error!! Response: %s\n", sim_rx_buffer);
+			return 0;
+		}
+
+	}
+	printf("Error!! Response: %s\n", sim_rx_buffer);
+	return 0;
+}
+
+// Fungsi untuk mengirim data MQTT (untuk topik dan payload) dengan mekanisme retry
+static int send_mqtt_data(const char* cmd, const char* data, int len) {
+	char full_cmd[50];
+	sprintf(full_cmd, "%s\r\n", cmd);
+	int retries = 0;
+	while (retries < MAX_RETRIES) {
+		send_command(full_cmd);
+		if (wait_for(">", 5000)) {
+			HAL_UART_Transmit(&huart4, (uint8_t*)data, len, HAL_MAX_DELAY);
+			if (wait_for("OK", 5000))
+				return 1;
+		}
+		retries++;
+		printf("Retrying command: %s (attempt %d)\n", cmd, retries + 1);
+	}
+	return 0;
+}
+
+// Fungsi untuk mengirim perintah AT dan menunggu respons dengan mekanisme retry
+static int send_command_with_retry(const char* cmd, const char* expected, uint32_t timeout) {
+	int retries = 0;
+	while (retries < MAX_RETRIES) {
+		send_command(cmd);
+		if (wait_for(expected, timeout))
+			return 1;
+		retries++;
+		printf("Retrying command: %s (attempt %d)\n", cmd, retries + 1);
+	}
+	return 0;
+}
+
+static int send_command_with_retry_extended(const char* cmd, const char* expected1,const char* expected2,const char* not_expected, uint32_t timeout) {
+	int retries = 0;
+	while (retries < MAX_RETRIES) {
+
+		send_command(cmd);
+		if (wait_for_extended(expected1, expected2, not_expected, timeout))
+			return 1;
+		retries++;
+		printf("Retrying command: %s (attempt %d)\n", cmd, retries + 1);
+	}
+	return 0;
+}
+
+
+
+// Fungsi utama untuk mengirim data parameter cuaca ke SIM7600 melalui MQTT
+void Send_To_SIM7600(void) {
+	// 1. Set APN
+	printf("\nAT+CGDCONT=1,\"IP\",\"M2MINTERNET\".........");
+	if (!send_command_with_retry("AT+CGDCONT=1,\"IP\",\"M2MINTERNET\"\r\n", "OK", 10000))
+		return;
+
+	// 2. Konfigurasi SSL
+	printf("\nAT+CSSLCFG.........");
+	if (!send_command_with_retry("AT+CSSLCFG=\"enableSNI\",0,1\r\n", "OK", 1000))
+		return;
+
+	// 3. Mulai layanan MQTT
+	printf("\nAT+CMQTTSTART.........");
+	if (!send_command_with_retry("AT+CMQTTSTART\r\n", "OK", 1000)){
+		if(!send_command_with_retry("AT+CMQTTSTART\r\n", "+CMQTTSTART: 23", 1000)){
+			return;
+		}
+	}
+
+
+	// 4. Akuisisi klien MQTT
+	printf("\nAT+CMQTTACCQ.........");
+	if (!send_command_with_retry("AT+CMQTTACCQ=0,\"SIMCom_client01\",1\r\n", "OK", 1000)){
+		if (!send_command_with_retry("AT+CMQTTACCQ=0,\"SIMCom_client01\",1\r\n", "+CMQTTACCQ: 0,19", 1000)){
+			return;
+		}
+	}
+
+	// 5. Hubungkan ke broker HiveMQ
+	char connect_cmd[256];
+	sprintf(connect_cmd,
+			"AT+CMQTTCONNECT=0,\"tcp://a51ad753198b41b3a4c2f4488d3e409d.s1.eu.hivemq.cloud:8883\",60,1,\"haidaramrurusdan\",\"h18082746R\"\r\n");
+	printf("\nAT+CMQTTCONNECT.........");
+	if (!send_command_with_retry(connect_cmd, "+CMQTTCONNECT: 0,0", 30000))
+		return;
+
+	// 6. Kirim data parameter cuaca ke topik sensor/cuaca
+	char payload[256];
+	char cmd[50];
+	char topic[] = "sensor/cuaca";
+
+	// Susun payload dengan format: waktu, latitude, longitude, suhu, kelembaban, arah angin,
+	// kecepatan angin, tekanan udara, radiasi matahari, curah hujan, water level
+	sprintf(payload,
+			"waktu:%s,latitude:%.5f,longitude:%.5f,suhu:%.1f,kelembaban:%.1f,arah_angin:%.1f,"
+			"kecepatan_angin:%.1f,tekanan_udara:%.1f,radiasi_matahari:%.1f,curah_hujan:%.1f,"
+			"water_level:%.1f",
+			time_display_buffer, Latitude, Longitude, temp_c, humidity_pct, windDir,
+			windSpeed, pressure_mbar, solar_rad, curah_hujan, distance);
+
+	int topic_len = strlen(topic);
+	int payload_len = strlen(payload);
+
+	// Kirim topik MQTT
+	sprintf(cmd, "AT+CMQTTTOPIC=0,%d", topic_len);
+	printf("\nAT+CMQTTTOPIC.........");
+	if (!send_mqtt_data(cmd, topic, topic_len))
+		return;
+
+	// Kirim payload MQTT
+	sprintf(cmd, "AT+CMQTTPAYLOAD=0,%d", payload_len);
+	printf("\nAT+CMQTTPAYLOAD.........");
+	if (!send_mqtt_data(cmd, payload, payload_len))
+		return;
+
+	// Publikasikan data
+	printf("\nAT+CMQTTPUB.........");
+	if (!send_command_with_retry("AT+CMQTTPUB=0,1,60\r\n", "+CMQTTPUB: 0,0", 2000))
+		return;
+
+	// 7. Putuskan koneksi dari broker
+	printf("\nAT+CMQTTDISC.........");
+	if (!send_command_with_retry("AT+CMQTTDISC=0,120\r\n", "OK", 1000))
+		return;
+
+	// 8. Lepaskan klien MQTT
+	printf("\nAT+CMQTTREL.........");
+	if (!send_command_with_retry("AT+CMQTTREL=0\r\n", "OK", 1000))
+		return;
+
+	// 9. Hentikan layanan MQTT
+	printf("\nAT+CMQTTSTOP.........");
+	if (!send_command_with_retry("AT+CMQTTSTOP\r\n", "OK", 1000))
+		return;
+}
+
+void Request_GPS_Data(void){
+
+	if(mode_com!=2)
+		return;
+
+	OK_Update = 0;
+	OK_send = 0;
+
+	NEXTION_SendString("time0", "Akuisisi GPS...");
+
+	printf("\nAT+CGPS=1,1.........");
+	send_command_with_retry("AT+CGPS=1,1\r\n", "OK", 10000);
+
+	printf("\nAT+CGNSSINFO.........");
+	if(send_command_with_retry_extended("AT+CGNSSINFO\r\n", "E", "W", ",,,,,,,," , 100000)){
+
+	    char *dataStr = strstr((char*)sim_rx_buffer, "+CGNSSINFO:");
+	    dataStr += strlen("+CGNSSINFO: ");
+	    HAL_Delay(100);
+
+	    // Variabel untuk token dan penanda indeks token
+	    char *token;
+	    int tokenIndex = 0;
+	    char *latStr = NULL;
+	    char *latDir = NULL;
+	    char *lonStr = NULL;
+	    char *lonDir = NULL;
+
+	    // Tokenisasi berdasarkan koma
+	    token = strtok(dataStr, ",");
+	    while (token != NULL) {
+	        // Berdasarkan format:
+	        // token[0] : nomor mode (misal "2")
+	        // token[1] : "07"
+	        // token[2] : "01"
+	        // token[3] : "02"
+	        // token[4] : Latitude dalam format ddmm.mmmmmm (misal "0739.552730")
+	        // token[5] : Arah latitude (misal "S")
+	        // token[6] : Longitude dalam format dddmm.mmmmmm (misal "11015.669813")
+	        // token[7] : Arah longitude (misal "E")
+	        if (tokenIndex == 4) {
+	            latStr = token;
+	        } else if (tokenIndex == 5) {
+	            latDir = token;
+	        } else if (tokenIndex == 6) {
+	            lonStr = token;
+	        } else if (tokenIndex == 7) {
+	            lonDir = token;
+	        }
+	        token = strtok(NULL, ",");
+	        tokenIndex++;
+	    }
+
+	    // Pastikan semua data yang diperlukan tersedia
+	    if (latStr && latDir && lonStr && lonDir) {
+	        // Parsing latitude
+	        // Format: ddmm.mmmmmm
+	        float latValue = atof(latStr);
+	        int latDegrees = (int)(latValue / 100);
+	        float latMinutes = latValue - (latDegrees * 100);
+	        float latDecimal = latDegrees + (latMinutes / 60.0f);
+	        // Jika arah adalah 'S', jadikan negatif
+	        if (latDir[0] == 'S' || latDir[0] == 's') {
+	            latDecimal = -latDecimal;
+	        }
+	        Latitude = latDecimal;
+
+	        // Parsing longitude
+	        // Format: dddmm.mmmmmm
+	        float lonValue = atof(lonStr);
+	        int lonDegrees = (int)(lonValue / 100);
+	        float lonMinutes = lonValue - (lonDegrees * 100);
+	        float lonDecimal = lonDegrees + (lonMinutes / 60.0f);
+	        // Jika arah adalah 'W', jadikan negatif
+	        if (lonDir[0] == 'W' || lonDir[0] == 'w') {
+	            lonDecimal = -lonDecimal;
+	        }
+	        Longitude = lonDecimal;
+
+	    	Write_SD("LOCATION.txt", 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,1,1,
+	    			Latitude, Longitude);
+
+	    }
+
+
+	}
+
+	printf("\nAT+CGPS=0.........");
+	send_command_with_retry("AT+CGPS=0\r\n", "OK", 10000);
+	NEXTION_SendString("time0", time_display_buffer);
+
+	OK_Update = 1;
+	OK_send = 1;
+
+}
+
+void Request_Update_Time_From_SIM7600(void)
+{
+	OK_Update = 0;
+
+	printf("\nAT+CGDCONT=1,\"IP\",\"M2MINTERNET\".........");
+	send_command_with_retry("AT+CGDCONT=1,\"IP\",\"M2MINTERNET\"\r\n", "OK", 10000);
+
+	printf("\nAT+CSSLCFG.........");
+	if (!send_command_with_retry("AT+CSSLCFG=\"enableSNI\",0,1\r\n", "OK", 1000))
+		return;
+
+	printf("\nAT+HTTPINIT.........");
+	send_command_with_retry("AT+HTTPINIT\r\n", "OK", 500);
+
+	printf("\nAT+HTTPPARA=jam.bmkg.go.id.........");
+	send_command_with_retry("AT+HTTPPARA=\"URL\",\"https://jam.bmkg.go.id/JamServer.php\"\r\n", "OK", 2000);
+
+	printf("\nAT+HTTPPARA=CID.........");
+	send_command_with_retry("AT+HTTPPARA=\"CID\",1\r\n", "OK", 2000);
+
+	printf("\nAT+HTTPACTION.........");
+	send_command_with_retry("AT+HTTPACTION=0\r\n", "+HTTPACTION: 0,200", 5000);
+
+
+
+	HAL_Delay(100);
+
+	printf("\nAT+HTTPREAD.........");
+
+	if(send_command_with_retry("AT+HTTPREAD=0,150\r\n", "OK", 5000)){
+		uint8_t tgl, bulan, jam, menit, detik;
+		uint16_t tahun;
+		wait_for("new Date(", 10000);
+		char *pDate = strstr((char*)sim_rx_buffer, "new Date(");
+		if (pDate != NULL)
+		{
+			// Pindahkan pointer ke awal angka-angka (setelah "new Date(")
+
+			pDate += strlen("new Date(");
+			HAL_Delay(100);
+
+			tgl   = (pDate[10]  - '0') * 10 + (pDate[11]  - '0');
+			bulan = (pDate[5]  - '0') * 10 + (pDate[6]  - '0');
+			tahun = (pDate[0]  - '0') * 1000 + (pDate[1] - '0') * 100
+					+ (pDate[2]  - '0') * 10   + (pDate[3] - '0');
+			jam   = (pDate[13] - '0') * 10 + (pDate[14] - '0');
+			menit = (pDate[16] - '0') * 10 + (pDate[17] - '0');
+			detik = (pDate[19] - '0') * 10 + (pDate[20] - '0');
+
+			printf("Tanggal: %02d-%02d-%04d\n", tgl, bulan, tahun);
+			printf("Waktu: %02d:%02d:%02d\n", jam, menit, detik);
+
+			Set_Time_DS3231(detik, menit, jam, 1, tgl, bulan, tahun);
+			Set_Time_Internal_RTC(detik, menit, jam, 1, tgl, bulan, tahun);
+
+
+		}
+		else
+		{
+			printf("Substring 'new Date(' tidak ditemukan dalam buffer.\n");
+		}
+
+	}
+
+
+	printf("\nAT+HTTPTERM.........");
+	send_command_with_retry("AT+HTTPTERM\r\n", "OK", 5000);
+
+	Restart_UART_DMA(&huart4, sim_rx_buffer, SIM_BUFFER_SIZE);
+
+	OK_Update = 1;
+}
+
+#endif
+
+
+
 
 
 void Communication_Init(void){
@@ -1754,7 +1940,7 @@ int main(void)
 	Send_Initial_Val();
 	Set_Interval(OK_send);
 	Initial_Interval(interval);
-	Set_Alarm_B_Intenal_RTC (15, 15, 35, 1);
+	Set_Alarm_B_Intenal_RTC (14, 11, 35, 1);
 	Communication_Init();
 
 
@@ -1767,9 +1953,9 @@ int main(void)
 	/* USER CODE BEGIN WHILE */
 	while (1)
 	{
-//		HAL_SuspendTick();
-//		HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
-//		HAL_ResumeTick();
+		//		HAL_SuspendTick();
+		//		HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
+		//		HAL_ResumeTick();
 
 		if (flag_tipp)
 		{
@@ -1781,15 +1967,8 @@ int main(void)
 			Set_Config_Default();
 		}
 
-		if (flag_update) {
-			flag_update = 0;
-			Send_Update_Val();
-
-		}
-
 		if (flag_periodic_meas) {
-			flag_periodic_meas = 0;
-			Send_Update_Val();
+			Send_Update_Val(OK_Update);
 			Initial_Interval(interval);
 
 		}
@@ -1809,6 +1988,7 @@ int main(void)
 
 			Delete_File("MEASURE.txt");
 			Delete_File("LASTVAL.txt");
+			Delete_File("LOCATION.txt");
 
 		}
 		if(flag_periodic_request_time_update){
@@ -1818,11 +1998,19 @@ int main(void)
 			}
 			if (mode_com==2){
 				Request_Update_Time_From_SIM7600();
+				Request_GPS_Data();
 			}
 
 		}
 		if(flag_time_update_esp_helper){
 			Time_Update_ESP_Helper();
+		}
+
+		if (flag_update) {
+			flag_update = 0;
+			Send_Update_Val(OK_Update);
+			Request_GPS_Data();
+
 		}
 		/* USER CODE END WHILE */
 
