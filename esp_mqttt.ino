@@ -25,7 +25,7 @@ PubSubClient mqttClient(mqttWiFiClient);
 #define UART_BAUD_RATE        115200
 #define UART_TX_PIN           GPIO_NUM_17
 #define UART_RX_PIN           GPIO_NUM_16
-#define UART_BUF_SIZE         100
+#define UART_BUF_SIZE         250
 
 // ===================== Konfigurasi Wake-Up =====================
 #define WAKEUP_PIN            GPIO_NUM_4
@@ -219,11 +219,9 @@ void uart_event_task(void *pvParameters) {
               // Akumulasi data sensor yang diterima (misal: data dikirim terpisah)
               if (received.startsWith("waktu:")) {
                 sensorDataPart1 = received;
-              } else if (received.startsWith("n:")) {
-                sensorDataPart2 = received;
               } else {
                 // Jika format berbeda, simpan di part1 sebagai fallback
-                sensorDataPart1 = received;
+                sensorDataPart2 = received;
               }
               // Jika kedua bagian telah diterima, gabungkan dan set flag untuk publish ke MQTT
               if (sensorDataPart1.length() > 0 && sensorDataPart2.length() > 0) {
