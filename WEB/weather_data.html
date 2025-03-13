@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Weather Data History - STMKG</title>
+  <!-- Google Fonts -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <!-- File CSS eksternal -->
+  <link rel="stylesheet" href="style.css">
+  <!-- Tambahan CSS untuk tabel -->
+  <style>
+    .data-container {
+      background-color: var(--card-bg);
+      border-radius: var(--border-radius);
+      box-shadow: var(--box-shadow);
+      padding: 1.5rem;
+      margin-bottom: 2rem;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .filter-section {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+      align-items: flex-end;
+    }
+    
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    
+    label {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+    }
+    
+    input[type="date"], button {
+      padding: 0.7rem 1rem;
+      border-radius: 0.5rem;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background-color: var(--secondary-bg);
+      color: var(--text-primary);
+      font-size: 0.9rem;
+    }
+    
+    button {
+      cursor: pointer;
+      background-color: var(--accent-color);
+      color: var(--primary-bg);
+      font-weight: 600;
+      transition: all 0.2s ease;
+    }
+    
+    button:hover {
+      opacity: 0.9;
+      transform: translateY(-2px);
+    }
+    
+    .csv-button {
+      background-color: #10b981;
+    }
+    
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+      font-size: 0.9rem;
+    }
+    
+    th, td {
+      padding: 0.8rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    th {
+      background-color: rgba(0, 0, 0, 0.2);
+      color: var(--accent-color);
+      font-weight: 600;
+      position: sticky;
+      top: 0;
+    }
+    
+    tr:hover {
+      background-color: rgba(255, 255, 255, 0.03);
+    }
+    
+    .table-container {
+      max-height: 500px;
+      overflow-y: auto;
+      margin-top: 1rem;
+    }
+    
+    .pagination {
+      display: flex;
+      justify-content: center;
+      gap: 0.5rem;
+      margin-top: 1.5rem;
+    }
+    
+    .pagination button {
+      padding: 0.5rem 1rem;
+      min-width: 40px;
+    }
+    
+    .no-data {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-secondary);
+    }
+    
+    .loading {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-secondary);
+    }
+    
+    /* Navigation link to home */
+    .nav-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+      color: var(--accent-color);
+      text-decoration: none;
+      transition: all 0.2s ease;
+    }
+    
+    .nav-link:hover {
+      opacity: 0.8;
+    }
+    
+    @media (max-width: 768px) {
+      .filter-section {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      
+      .form-group {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Data Cuaca - STMKG</h1>
+    <div class="status-container">
+      <div class="status-item">
+        <i class="fas fa-database"></i>
+        <span>Histori Data Cuaca</span>
+      </div>
+    </div>
+  </header>
+  
+  <main style="display: block; padding: 2rem;">
+    <a href="aws_stmkg.html" class="nav-link">
+      <i class="fas fa-arrow-left"></i> Kembali ke Dashboard
+    </a>
+    
+    <div class="data-container">
+      <h2 style="margin-bottom: 1.5rem;">Histori Data Parameter Cuaca</h2>
+      
+      <div class="filter-section">
+        <div class="form-group">
+          <label for="start-date">Tanggal Mulai</label>
+          <input type="date" id="start-date">
+        </div>
+        
+        <div class="form-group">
+          <label for="end-date">Tanggal Akhir</label>
+          <input type="date" id="end-date">
+        </div>
+        
+        <div class="form-group">
+          <button id="filter-btn">
+            <i class="fas fa-filter"></i> Filter Data
+          </button>
+        </div>
+        
+        <div class="form-group">
+          <button id="download-csv" class="csv-button">
+            <i class="fas fa-download"></i> Download CSV
+          </button>
+        </div>
+      </div>
+      
+      <div class="table-container">
+        <table id="weather-table">
+          <thead>
+            <tr>
+              <th>Waktu</th>
+              <th>Suhu (°C)</th>
+              <th>Kelembaban (%)</th>
+              <th>Kecepatan Angin (m/s)</th>
+              <th>Arah Angin (°)</th>
+              <th>Tekanan Udara (hPa)</th>
+              <th>Radiasi Matahari (W/m²)</th>
+              <th>Curah Hujan (mm)</th>
+              <th>Water Level (cm)</th>
+            </tr>
+          </thead>
+          <tbody id="table-body">
+            <tr>
+              <td colspan="9" class="loading">Memuat data...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      
+      <div class="pagination" id="pagination">
+        <!-- Pagination buttons will be generated here -->
+      </div>
+    </div>
+  </main>
+  
+  <footer>
+    &copy; 2025 - Sekolah Tinggi Meteorologi Klimatologi dan Geofisika. All rights reserved.
+  </footer>
+  
+  <script src="weather_data.js"></script>
+</body>
+</html>
