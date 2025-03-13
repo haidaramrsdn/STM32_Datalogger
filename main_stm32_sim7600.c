@@ -97,7 +97,7 @@ static void MX_RTC_Init(void);
 /* USER CODE BEGIN 0 */
 
 void Send_To_ESP32(void);
-void Send_To_SIM7600(void);
+static int Send_To_SIM7600(void);
 void Read_RK400(float ch, uint8_t proceed);
 void Communication_Init(void);
 void Time_Update_ESP_Helper(void);
@@ -1288,7 +1288,6 @@ void Send_Update_Val(uint8_t Acc) {
 				rtcstm.year, rtcstm.hour, rtcstm.minutes, rtcstm.seconds,
 				temp_c, humidity_pct, windDir, windSpeed, pressure_mbar, solar_rad,curah_hujan,
 				distance,1,1);
-		HAL_Delay(100);
 
 
 
@@ -1296,11 +1295,19 @@ void Send_Update_Val(uint8_t Acc) {
 			NEXTION_SendString("time0", "Mengirim Data - Wi-Fi");
 			printf("Sending via Wi-Fi\n");
 			Send_To_ESP32();
-		}
-		if(mode_com==2){
+		} else if(mode_com==2){
 			NEXTION_SendString("time0", "Mengirim Data - LTE");
 			printf("Sending via Selular\n");
-			Send_To_SIM7600();
+			for(int i=0;i<2;i++){
+				if(Send_To_SIM7600()){
+					printf("Send via Selular: Sukses\n");
+					break;
+				}else{
+					printf("Send via Selular: Gagal\n");
+				}
+				HAL_Delay(100);
+			}
+
 		}
 
 		NEXTION_SendString("t0", "Pembaruan Terakhir");
@@ -1602,25 +1609,42 @@ static int send_command_with_retry_extended(const char* cmd, const char* expecte
 	return 0;
 }
 
+void Disconnect_MQTT(void){
+
+	printf("\nAT+CMQTTDISC.........");
+	if (!send_command_with_retry("AT+CMQTTDISC=0,120\r\n", "OK", 1000))
+		return;
+
+	printf("\nAT+CMQTTREL.........");
+	if (!send_command_with_retry("AT+CMQTTREL=0\r\n", "OK", 1000))
+		return;
+
+	printf("\nAT+CMQTTSTOP.........");
+	if (!send_command_with_retry("AT+CMQTTSTOP\r\n", "OK", 1000))
+		return;
+
+}
+
 
 
 // Fungsi utama untuk mengirim data parameter cuaca ke SIM7600 melalui MQTT
-void Send_To_SIM7600(void) {
+static int Send_To_SIM7600(void) {
 	// 1. Set APN
 	printf("\nAT+CGDCONT=1,\"IP\",\"M2MINTERNET\".........");
 	if (!send_command_with_retry("AT+CGDCONT=1,\"IP\",\"M2MINTERNET\"\r\n", "OK", 10000))
-		return;
+		return 0;
 
 	// 2. Konfigurasi SSL
 	printf("\nAT+CSSLCFG.........");
 	if (!send_command_with_retry("AT+CSSLCFG=\"enableSNI\",0,1\r\n", "OK", 1000))
-		return;
+		return 0;
 
 	// 3. Mulai layanan MQTT
 	printf("\nAT+CMQTTSTART.........");
 	if (!send_command_with_retry("AT+CMQTTSTART\r\n", "OK", 1000)){
 		if(!send_command_with_retry("AT+CMQTTSTART\r\n", "+CMQTTSTART: 23", 1000)){
-			return;
+			Disconnect_MQTT();
+			return 0;
 		}
 	}
 
@@ -1629,7 +1653,8 @@ void Send_To_SIM7600(void) {
 	printf("\nAT+CMQTTACCQ.........");
 	if (!send_command_with_retry("AT+CMQTTACCQ=0,\"SIMCom_client01\",1\r\n", "OK", 1000)){
 		if (!send_command_with_retry("AT+CMQTTACCQ=0,\"SIMCom_client01\",1\r\n", "+CMQTTACCQ: 0,19", 1000)){
-			return;
+			Disconnect_MQTT();
+			return 0;
 		}
 	}
 
@@ -1638,8 +1663,10 @@ void Send_To_SIM7600(void) {
 	sprintf(connect_cmd,
 			"AT+CMQTTCONNECT=0,\"tcp://a51ad753198b41b3a4c2f4488d3e409d.s1.eu.hivemq.cloud:8883\",60,1,\"haidaramrurusdan\",\"h18082746R\"\r\n");
 	printf("\nAT+CMQTTCONNECT.........");
-	if (!send_command_with_retry(connect_cmd, "+CMQTTCONNECT: 0,0", 30000))
-		return;
+	if (!send_command_with_retry(connect_cmd, "+CMQTTCONNECT: 0,0", 30000)){
+		Disconnect_MQTT();
+		return 0;
+	}
 
 	// 6. Kirim data parameter cuaca ke topik sensor/cuaca
 	char payload[256];
@@ -1661,34 +1688,32 @@ void Send_To_SIM7600(void) {
 	// Kirim topik MQTT
 	sprintf(cmd, "AT+CMQTTTOPIC=0,%d", topic_len);
 	printf("\nAT+CMQTTTOPIC.........");
-	if (!send_mqtt_data(cmd, topic, topic_len))
-		return;
+	if (!send_mqtt_data(cmd, topic, topic_len)){
+		Disconnect_MQTT();
+		return 0;
+	}
 
 	// Kirim payload MQTT
 	sprintf(cmd, "AT+CMQTTPAYLOAD=0,%d", payload_len);
 	printf("\nAT+CMQTTPAYLOAD.........");
-	if (!send_mqtt_data(cmd, payload, payload_len))
-		return;
+	if (!send_mqtt_data(cmd, payload, payload_len)){
+		Disconnect_MQTT();
+		return 0;
+	}
+
 
 	// Publikasikan data
 	printf("\nAT+CMQTTPUB.........");
-	if (!send_command_with_retry("AT+CMQTTPUB=0,1,60\r\n", "+CMQTTPUB: 0,0", 2000))
-		return;
+	if (!send_command_with_retry("AT+CMQTTPUB=0,1,60\r\n", "+CMQTTPUB: 0,0", 2000)){
+		Disconnect_MQTT();
+		return 0;
+	}
 
-	// 7. Putuskan koneksi dari broker
-	printf("\nAT+CMQTTDISC.........");
-	if (!send_command_with_retry("AT+CMQTTDISC=0,120\r\n", "OK", 1000))
-		return;
+	Disconnect_MQTT();
 
-	// 8. Lepaskan klien MQTT
-	printf("\nAT+CMQTTREL.........");
-	if (!send_command_with_retry("AT+CMQTTREL=0\r\n", "OK", 1000))
-		return;
+	return 1;
 
-	// 9. Hentikan layanan MQTT
-	printf("\nAT+CMQTTSTOP.........");
-	if (!send_command_with_retry("AT+CMQTTSTOP\r\n", "OK", 1000))
-		return;
+
 }
 
 void Request_GPS_Data(void){
@@ -1940,7 +1965,7 @@ int main(void)
 	Send_Initial_Val();
 	Set_Interval(OK_send);
 	Initial_Interval(interval);
-	Set_Alarm_B_Intenal_RTC (14, 11, 35, 1);
+	Set_Alarm_B_Intenal_RTC (8, 11, 35, 1);
 	Communication_Init();
 
 
@@ -1953,9 +1978,9 @@ int main(void)
 	/* USER CODE BEGIN WHILE */
 	while (1)
 	{
-		//		HAL_SuspendTick();
-		//		HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
-		//		HAL_ResumeTick();
+		HAL_SuspendTick();
+		HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
+		HAL_ResumeTick();
 
 		if (flag_tipp)
 		{
