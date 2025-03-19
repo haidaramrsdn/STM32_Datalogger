@@ -12,10 +12,10 @@
 #include <HTTPClient.h>
 
 // ===================== Konfigurasi HiveMQ Cloud =====================
-const char* mqtt_server    = "a51ad753198b41b3a4c2f4488d3e409d.s1.eu.hivemq.cloud";  // Ganti dengan URL cluster Anda
-const int   mqtt_port      = 8883;                             // Port TLS
-const char* mqtt_username  = "haidaramrurusdan";                // Username HiveMQ Cloud
-const char* mqtt_password  = "h18082746R";                      // Password HiveMQ Cloud 
+const char* mqtt_server    = "a51ad753198b41b3a4c2f4488d3e409d.s1.eu.hivemq.cloud";
+const int   mqtt_port      = 8883;
+const char* mqtt_username  = "haidaramrurusdan";
+const char* mqtt_password  = "h18082746R";
 
 WiFiClientSecure mqttWiFiClient;
 PubSubClient mqttClient(mqttWiFiClient);
@@ -36,28 +36,22 @@ PubSubClient mqttClient(mqttWiFiClient);
 // Handle timer inaktivitas
 static TimerHandle_t inactivity_timer = NULL;
 
-// Flag untuk memicu deep sleep (diubah oleh timer callback)
+// Flag untuk deep sleep dan update waktu
 volatile bool shouldDeepSleep = false;
-
-// Flag untuk memicu update waktu (dari perintah "timeupdate")
 volatile bool updateTimeRequested = false;
 
-// ===================== WiFi Credentials =====================
-const char* WIFI_SSID = "Si Fulan";
-const char* WIFI_PASSWORD = "h18082746";
+// Variabel kredensial WiFi
+String WIFI_SSID = "";
+String WIFI_PASSWORD = "";
 
-// ===================== Variabel Global UART Queue =====================
+// Queue UART
 QueueHandle_t uart_queue = NULL;
 
-// ===================== Variabel Global untuk Data ke MQTT =====================
-volatile bool sendDataToMQTT = false;
-String uartReceivedString = "";
+// Variabel untuk data sensor yang akan dikirim ke MQTT
+String sensorDataBuffer = "";
+unsigned long lastSensorDataMillis = 0;
 
-// Variabel untuk mengakumulasi data sensor (karena data dikirim terpisah)
-String sensorDataPart1 = "";
-String sensorDataPart2 = "";
-
-// Fungsi untuk menghubungkan ke MQTT HiveMQ Cloud
+// ===================== Fungsi MQTT =====================
 void reconnectMQTT() {
   while (!mqttClient.connected()) {
     Serial.print("Menghubungkan ke MQTT HiveMQ Cloud...");
@@ -74,8 +68,28 @@ void reconnectMQTT() {
   }
 }
 
-// Fungsi untuk mempublikasikan data sensor ke topik sensor/cuaca
 void publishSensorData(String data) {
+  // Pastikan WiFi terkoneksi terlebih dahulu
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi belum terkoneksi. Menghubungkan...");
+    WiFi.begin(WIFI_SSID.c_str(), WIFI_PASSWORD.c_str());
+    int retry = 0;
+    while (WiFi.status() != WL_CONNECTED && retry < 20) {
+      delay(500);
+      Serial.print(".");
+      retry++;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\nWiFi terkoneksi.");
+    } else {
+      Serial.println("\nGagal menghubungkan WiFi. Batal publish data.");
+      return;
+    }
+  }
+  // Pastikan koneksi MQTT tersedia
+  if (!mqttClient.connected()) {
+    reconnectMQTT();
+  }
   if (mqttClient.publish("sensor/cuaca", data.c_str())) {
     Serial.print("Dipublish ke sensor/cuaca: ");
     Serial.println(data);
@@ -84,23 +98,27 @@ void publishSensorData(String data) {
   }
 }
 
-// Fungsi untuk update waktu dari server BMKG dan mengirimkan ke STM32 via UART (tanpa koneksi MQTT)
+// ===================== Fungsi Update Waktu =====================
 void updateTimeFromServer() {
-  // Pastikan WiFi terkoneksi
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Menghubungkan ke WiFi...");
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    int retry = 0;
-    while (WiFi.status() != WL_CONNECTED && retry < 20) {
-      delay(500);
-      Serial.print(".");
-      retry++;
-    }
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("\nGagal menghubungkan ke WiFi");
+    if (WIFI_SSID != "") {
+      Serial.println("Menghubungkan ke WiFi...");
+      WiFi.begin(WIFI_SSID.c_str(), WIFI_PASSWORD.c_str());
+      int retry = 0;
+      while (WiFi.status() != WL_CONNECTED && retry < 20) {
+        delay(500);
+        Serial.print(".");
+        retry++;
+      }
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("\nGagal menghubungkan ke WiFi");
+        return;
+      }
+      Serial.println("\nWiFi terkoneksi.");
+    } else {
+      Serial.println("Kredensial WiFi belum disetel. Tidak dapat update waktu.");
       return;
     }
-    Serial.println("\nWiFi terkoneksi.");
   }
 
   WiFiClientSecure client;
@@ -162,7 +180,6 @@ void updateTimeFromServer() {
             Serial.print("Waktu yang didapat: ");
             Serial.println(timeBuffer);
 
-            // Kirim waktu ke STM32 via UART (tanpa koneksi ke HiveMQ Cloud)
             uart_write_bytes(UART_PORT_NUM, timeBuffer, strlen(timeBuffer));
             Serial.println("Waktu dikirim ke STM32.");
           } else {
@@ -188,6 +205,59 @@ void updateTimeTask(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+// ===================== Fungsi Parsing Data UART =====================
+// Fungsi ini memecah string yang diterima berdasarkan koma dan memproses masing-masing token.
+void processReceived(String received) {
+  int start = 0;
+  while (true) {
+    int commaIndex = received.indexOf(',', start);
+    String token;
+    if (commaIndex == -1) {
+      token = received.substring(start);
+    } else {
+      token = received.substring(start, commaIndex);
+    }
+    token.trim();
+    if (token.length() > 0) {
+      // Jika token adalah perintah timeupdate
+      if (token.equals("timeupdate")) {
+        Serial.println("Perintah timeupdate diterima, meminta update waktu.");
+        updateTimeRequested = true;
+      }
+      // Jika token adalah kredensial WiFi
+      else if (token.startsWith("ssid:")) {
+        String newSSID = token.substring(5);
+        if (newSSID != WIFI_SSID) {
+          WIFI_SSID = newSSID;
+          Serial.print("SSID diperbarui: ");
+          Serial.println(WIFI_SSID);
+        }
+      } 
+      else if (token.startsWith("pass:")) {
+        String newPass = token.substring(5);
+        if (newPass != WIFI_PASSWORD) {
+          WIFI_PASSWORD = newPass;
+          Serial.print("Password diperbarui: ");
+          Serial.println(WIFI_PASSWORD);
+        }
+      }
+      // Token dianggap data sensor
+      else {
+        // Akumulasi data sensor ke buffer
+        if (sensorDataBuffer.length() > 0) {
+          sensorDataBuffer += ",";
+        }
+        sensorDataBuffer += token;
+        lastSensorDataMillis = millis();
+      }
+    }
+    if (commaIndex == -1)
+      break;
+    start = commaIndex + 1;
+  }
+}
+
+// ===================== Task untuk Event UART =====================
 void uart_event_task(void *pvParameters) {
   QueueHandle_t local_uart_queue = *(QueueHandle_t *)pvParameters;
   uart_event_t event;
@@ -210,29 +280,7 @@ void uart_event_task(void *pvParameters) {
             
             String received = String((char*)data_buffer, len);
             received.trim();
-            
-            // Jika perintah "timeupdate" diterima, lakukan update waktu (tanpa koneksi MQTT)
-            if (received.equals("timeupdate")) {
-              Serial.println("Perintah timeupdate diterima, meminta update waktu.");
-              updateTimeRequested = true;
-            } else {
-              // Akumulasi data sensor yang diterima (misal: data dikirim terpisah)
-              if (received.startsWith("waktu:")) {
-                sensorDataPart1 = received;
-              } else {
-                // Jika format berbeda, simpan di part1 sebagai fallback
-                sensorDataPart2 = received;
-              }
-              // Jika kedua bagian telah diterima, gabungkan dan set flag untuk publish ke MQTT
-              if (sensorDataPart1.length() > 0 && sensorDataPart2.length() > 0) {
-                String fullSensorData = sensorDataPart1 + sensorDataPart2;
-                uartReceivedString = fullSensorData;
-                sendDataToMQTT = true;
-                // Bersihkan buffer agar siap untuk data selanjutnya
-                sensorDataPart1 = "";
-                sensorDataPart2 = "";
-              }
-            }
+            processReceived(received);
             
             // Reset timer inaktivitas
             if (inactivity_timer != NULL) {
@@ -269,6 +317,7 @@ void uart_event_task(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+// ===================== Deep Sleep =====================
 void enter_deep_sleep() {
   Serial.println("Tidak ada aktivitas UART. Memasuki mode deep sleep...");
   WiFi.disconnect();
@@ -284,15 +333,15 @@ void inactivity_timer_callback(TimerHandle_t xTimer) {
   shouldDeepSleep = true;
 }
 
+// ===================== Setup dan Loop =====================
 void setup() {
   Serial.begin(115200);
   while (!Serial) { }
   Serial.println("Booting...");
 
-  // Konfigurasi WAKEUP_PIN
   pinMode(WAKEUP_PIN, INPUT_PULLUP);
 
-  // --- PENTING: Inisialisasi UART terlebih dahulu ---
+  // Inisialisasi UART
   uart_config_t uart_config = {
     .baud_rate = UART_BAUD_RATE,
     .data_bits = UART_DATA_8_BITS,
@@ -320,33 +369,19 @@ void setup() {
   } else {
     xTimerStart(inactivity_timer, 0);
   }
-
-  // Hubungkan ke WiFi pada setup
-  Serial.println("Menghubungkan ke WiFi...");
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  int retry = 0;
-  while(WiFi.status() != WL_CONNECTED && retry < 20) {
-    delay(500);
-    Serial.print(".");
-    retry++;
-  }
-  if(WiFi.status() == WL_CONNECTED){
-    Serial.println("\nWiFi terkoneksi!");
-  } else {
-    Serial.println("\nGagal menghubungkan ke WiFi.");
-  }
+  
+  Serial.println("Menunggu kredensial WiFi dan perintah dari UART...");
 
   // Konfigurasi MQTT
-  mqttWiFiClient.setInsecure(); // Non-aktifkan verifikasi sertifikat TLS
+  mqttWiFiClient.setInsecure();
   mqttClient.setServer(mqtt_server, mqtt_port);
 }
 
 void loop() {
-  if (!mqttClient.connected()) {
-    reconnectMQTT();
+  if (mqttClient.connected()) {
+    mqttClient.loop();
   }
-  mqttClient.loop();
-
+  
   if (shouldDeepSleep) {
     shouldDeepSleep = false;
     enter_deep_sleep();
@@ -354,14 +389,13 @@ void loop() {
   
   if (updateTimeRequested) {
     updateTimeRequested = false;
-    // Update waktu dari server dan kirim ke STM32 (tanpa koneksi ke MQTT)
     xTaskCreatePinnedToCore(updateTimeTask, "updateTimeTask", 8192, NULL, 10, NULL, 0);
   }
   
-  if (sendDataToMQTT) {
-    sendDataToMQTT = false;
-    // Publikasikan data sensor yang telah lengkap ke broker MQTT
-    publishSensorData(uartReceivedString);
+  // Jika tidak ada data sensor baru selama 1 detik, publish data sensor
+  if (sensorDataBuffer.length() > 0 && (millis() - lastSensorDataMillis) > 1000) {
+    publishSensorData(sensorDataBuffer);
+    sensorDataBuffer = "";
   }
   
   delay(10);
