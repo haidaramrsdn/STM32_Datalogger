@@ -101,8 +101,6 @@ static int Send_To_SIM7600(void);
 void Read_RK400(float ch, uint8_t proceed);
 void Communication_Init(void);
 void Time_Update_ESP_Helper(void);
-void Power_ON_SIM7600(void);
-void Power_OFF_SIM7600(void);
 void Wake_SIM7600(void);
 void Sleep_SIM7600(void);
 
@@ -110,8 +108,8 @@ void Sleep_SIM7600(void);
 
 /* --- Makro & Konstanta --- */
 #define MODBUS_BUFFER_SIZE         32
-#define UART6_RX_BUFFER_SIZE       30
-#define ESP_BUFFER_SIZE			   256
+#define UART6_RX_BUFFER_SIZE       100
+#define ESP_BUFFER_SIZE			   320
 #define SIM_BUFFER_SIZE			   256
 #define DEBOUNCE_TIME              50
 
@@ -177,9 +175,23 @@ volatile uint8_t flag_time_update_esp_helper = 0;
 volatile uint8_t flag_periodic_request_time_update = 0;
 volatile uint8_t flag_periodic_meas = 0;
 volatile uint8_t flag_tipp = 0;
+volatile uint8_t flag_sleep = 1;
+volatile uint8_t flag_recent_latlong = 0;
+volatile uint8_t flag_recent_time = 0;
+volatile uint8_t flag_timeupdate_only = 0;
+volatile uint8_t flag_update_gps = 0;
+volatile uint8_t flag_set_wifi = 0;
+volatile uint8_t flag_ssid_info = 0;
+volatile uint8_t flag_wake_print = 0;
+
+
+volatile uint8_t already_on = 0;
 
 
 volatile uint16_t interval = 0;
+
+char ssid[32] = {0};
+char password[32] = {0};
 
 volatile HAL_StatusTypeDef modbus_status = HAL_ERROR;
 
@@ -415,6 +427,7 @@ void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc)
 void HAL_RTCEx_AlarmBEventCallback(RTC_HandleTypeDef *hrtc)
 {
 	flag_periodic_request_time_update = 1;
+	flag_update_gps = 1;
 }
 
 void Update_Time_Buffer(){
@@ -527,7 +540,7 @@ void Write_SD(const char *filename, uint8_t inval, uint8_t modes,
 		uint8_t jam, uint8_t mnt, uint8_t dtk,
 		float suhu, float rh, float windir, float winds,
 		float pressure, float radiasi, float curah_hujan, float waterl,
-		float lat, float lot) {
+		float lat, float lot, char *ssid, char *pass) {
 	FATFS FatFs;
 	FIL Fil;
 	FRESULT FR_Status;
@@ -546,6 +559,21 @@ void Write_SD(const char *filename, uint8_t inval, uint8_t modes,
 	if (strcmp(filename, "Config.txt") == 0) {
 		// Format konfigurasi ke dalam buffer
 		snprintf(RW_Buffer, sizeof(RW_Buffer), "Interval: %u, Mode: %u", inval, modes);
+
+		// Buka file dengan opsi membuat file baru atau menimpa file yang sudah ada
+		FR_Status = f_open(&Fil, filename, FA_WRITE | FA_CREATE_ALWAYS);
+		if (FR_Status == FR_OK) {
+			f_write(&Fil, RW_Buffer, strlen(RW_Buffer), &WWC);
+			f_close(&Fil);
+		} else {
+			printf("Error opening file %s, Code: %d\r\n", filename, FR_Status);
+		}
+	}
+
+	// Jika file yang dituju adalah Config.txt, maka file akan ditimpa dengan konfigurasi baru
+	if (strcmp(filename, "WIFICONF.txt") == 0) {
+		// Format konfigurasi ke dalam buffer
+		snprintf(RW_Buffer, sizeof(RW_Buffer), "SSID: %s, PASS: %s", ssid, pass);
 
 		// Buka file dengan opsi membuat file baru atau menimpa file yang sudah ada
 		FR_Status = f_open(&Fil, filename, FA_WRITE | FA_CREATE_ALWAYS);
@@ -674,6 +702,34 @@ void Read_SD(const char *filename, uint8_t proceed) {
 			printf("Error opening file %s, Code: %d\r\n", filename, FR_Status);
 		}
 	}
+
+	if (strcmp(filename, "WIFICONF.txt") == 0 && proceed == 1) {
+		FR_Status = f_open(&Fil, filename, FA_READ);
+		if (FR_Status == FR_OK) {
+			if (f_read(&Fil, RW_Buffer, sizeof(RW_Buffer) - 1, &RWC) == FR_OK && RWC > 0) {
+				RW_Buffer[RWC] = '\0';  // Pastikan string null-terminated
+
+				char tmp_ssid[50] = {0}, tmp_pass[50] = {0};
+				/*
+				 * Menggunakan format specifier berikut:
+				 * - %49[^,]  : membaca maksimal 49 karakter sampai bertemu koma, sehingga bisa menangani spasi dalam SSID
+				 * - %49[^\n] : membaca maksimal 49 karakter sampai akhir baris, sehingga bisa menangani spasi dalam password
+				 */
+				if (sscanf(RW_Buffer, "SSID: %49[^,], PASS: %49[^\n]", tmp_ssid, tmp_pass) == 2) {
+					strcpy(ssid, tmp_ssid);
+					strcpy(password, tmp_pass);
+				} else {
+					printf("Failed to parse configuration\n");
+				}
+			} else {
+				printf("Failed to read from file or file is empty\n");
+			}
+			f_close(&Fil);
+		} else {
+			printf("Error opening file %s, Code: %d\r\n", filename, FR_Status);
+		}
+	}
+
 
 	if (strcmp(filename, "LOCATION.txt") == 0 && proceed==1) {
 		FR_Status = f_open(&Fil, filename, FA_READ);
@@ -1122,19 +1178,19 @@ void Set_Apply(uint8_t apply_1, uint8_t inval, uint8_t comm) {
 	if (apply_1 == 1) {
 		// Jika nilai interval tidak nol, perbarui interval
 		if(inval != 0 && comm != 0){
-			Write_SD("Config.txt", inval, comm, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1);
+			Write_SD("Config.txt", inval, comm, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,"","");
 			HAL_Delay(100);
 			printf("Set Interval and Communication Method Success Success\n");
 		} else if (inval != 0) {
 			// Hitung interval dalam detik (pastikan satuan konsisten)
 			printf("Set Interval Success\n");
 			// Panggil Write_SD dengan nilai interval yang baru dan NO_CHANGE untuk parameter komunikasi
-			Write_SD("Config.txt", inval, NO_CHANGE, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1);
+			Write_SD("Config.txt", inval, NO_CHANGE, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, "", "");
 			HAL_Delay(100);
 		}else if (comm != 0) {
 			printf("Set Communication Method Success\n");
 			// Panggil Write_SD dengan NO_CHANGE untuk interval dan nilai komunikasi yang baru
-			Write_SD("Config.txt", NO_CHANGE, comm, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1);
+			Write_SD("Config.txt", NO_CHANGE, comm, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, "","");
 			HAL_Delay(100);
 		}
 	}
@@ -1211,8 +1267,15 @@ void Send_Initial_Val(void) {
 	}
 	Read_SD("LASTVAL.txt", OK_send);
 	HAL_Delay(100);
-	NEXTION_SendString("t0", "Pembaruan Terakhir");
-	NEXTION_SendString("time0", time_display_buffer);
+
+	if(already_on){
+		NEXTION_SendString("t0", "Pembaruan Terakhir");
+		NEXTION_SendString("time0", time_display_buffer);
+	}else{
+		NEXTION_SendString("t0", "Tunggu Sebentar..");
+		NEXTION_SendString("time0", "");
+	}
+
 	NEXTION_SendFloat("ch0", curah_hujan);
 	NEXTION_SendFloat("winds0", windSpeed);
 	NEXTION_SendFloat("windd0", windDir);
@@ -1223,7 +1286,10 @@ void Send_Initial_Val(void) {
 	NEXTION_SendFloat("sunrad0", solar_rad);
 
 	Read_SD("LOCATION.txt", OK_send);
+
+	Read_SD("WIFICONF.txt", OK_send);
 	HAL_Delay(100);
+
 
 
 	printf("Send Recent Val Success\n");
@@ -1247,7 +1313,9 @@ void Send_Update_Val(uint8_t Acc) {
 		Read_SHT20();
 		Read_PYR20();
 
-		Read_SD("LOCATION.txt", OK_send);
+		Read_SD("LOCATION.txt", 1);
+
+		Read_SD("WIFICONF.txt", 1);
 
 
 		RK900_Valid = 1;
@@ -1286,12 +1354,12 @@ void Send_Update_Val(uint8_t Acc) {
 		Write_SD("MEASURE.txt", 1, 1, rtcstm.dayofmonth, rtcstm.month,
 				rtcstm.year, rtcstm.hour, rtcstm.minutes, rtcstm.seconds,
 				temp_c, humidity_pct, windDir, windSpeed, pressure_mbar, solar_rad,curah_hujan,
-				distance,1,1);
+				distance,1,1,"","");
 
 		Write_SD("LASTVAL.txt", 1, 1, rtcstm.dayofmonth, rtcstm.month,
 				rtcstm.year, rtcstm.hour, rtcstm.minutes, rtcstm.seconds,
 				temp_c, humidity_pct, windDir, windSpeed, pressure_mbar, solar_rad,curah_hujan,
-				distance,1,1);
+				distance,1,1,"","");
 
 
 
@@ -1300,7 +1368,6 @@ void Send_Update_Val(uint8_t Acc) {
 			printf("Sending via Wi-Fi\n");
 			Send_To_ESP32();
 		} else if(mode_com==2){
-			Wake_SIM7600();
 			NEXTION_SendString("time0", "Mengirim Data - LTE");
 			printf("Sending via Selular\n");
 			for(int i=0;i<2;i++){
@@ -1313,7 +1380,6 @@ void Send_Update_Val(uint8_t Acc) {
 				HAL_Delay(100);
 			}
 
-			Sleep_SIM7600();
 
 		}
 
@@ -1325,6 +1391,51 @@ void Send_Update_Val(uint8_t Acc) {
 
 		OK_send = 1;
 	}
+
+}
+
+
+void Send_Recent_Time(uint8_t proceed){
+	char recent_time[30]="-";
+	char recent_date[30]="-";
+
+	if(proceed){
+
+		Get_Time_Internal_RTC();
+		snprintf(recent_time, sizeof(recent_time),
+				"%02d:%02d:%02d",rtcstm.hour, rtcstm.minutes, rtcstm.seconds);
+
+		snprintf(recent_date, sizeof(recent_date),
+				"%02d/%02d/%04d",
+				rtcstm.dayofmonth, rtcstm.month, 2000 + rtcstm.year);
+
+		NEXTION_SendString("waktu0", recent_time);
+		NEXTION_SendString("tgl0", recent_date);
+
+		printf("Time disp\n");
+
+		HAL_Delay(200);
+	}
+}
+
+void Send_Recent_Latlong(void){
+	char recent_lat[30]="-";
+	char recent_long[30]="-";
+	Read_SD("LOCATION.txt", OK_send);
+
+	OK_send = 0;
+
+	snprintf(recent_lat, sizeof(recent_lat), "%.5f", Latitude);
+	snprintf(recent_long, sizeof(recent_long), "%.5f", Longitude);
+
+	NEXTION_SendString("lat0", recent_lat);
+	NEXTION_SendString("long0", recent_long);
+
+	flag_recent_latlong = 0;
+
+	printf("Send Recent Latlong Success\n");
+
+	OK_send = 1;
 
 }
 
@@ -1410,23 +1521,58 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
 				flag_com = 1;
 				mode_com = 2;
 				break;
-			case 0x01:
-				flag_recentval = 1;
+			default:
+				break;
+			}
+		} else if (cmd1 == 0x30 && cmd2 == 0x05) {
+			flag_update = 1;
+		} else if(cmd1 == 0x33){
+			switch(cmd2){
+			case 0x05:
+				//timeupdateonly
+				flag_timeupdate_only=1;
+				break;
+			case 0x0A:
+				//updategps
+				flag_update_gps = 1;
 				break;
 			default:
 				break;
 			}
-		} else if (cmd1 == 0x30) {
-			if (cmd2 == 0x05) {
-				flag_update = 1;
-			} else if (cmd2 == 0x01 || cmd2 == 0x02) {
-				flag_recentval = 1;
-			}
-		} else if ((cmd1 == 0x31) && (cmd2 == 0x01)) {
-			flag_recentval = 1;
-		} else if (memchr(uart6_rx_buffer, 0x87, sizeof(uart6_rx_buffer)) != NULL) {
-			flag_recentval = 1;
+
 		}
+
+		if(cmd1 == 0x25 && (cmd2 == 0x32 || cmd2 == 0x31 || cmd2 == 0x30 )){
+			flag_recentval = 1;
+			flag_recent_time = 0;
+
+		}else if(cmd1 == 0x25 && (cmd2 == 0x33 || cmd2 == 0x74)){
+			flag_sleep = 0;
+			flag_recent_time = 1;
+			flag_recent_latlong=1;
+			flag_ssid_info = 1;
+		}
+
+
+
+		if (memchr(uart6_rx_buffer, 0x86, sizeof(uart6_rx_buffer)) != NULL) {
+			//nextion sleep
+			flag_sleep = 1;
+
+		} else if(memchr(uart6_rx_buffer, 0x87, sizeof(uart6_rx_buffer)) != NULL){
+			//nextion wake up
+			flag_sleep = 0;
+			flag_recent_latlong=1;
+			flag_ssid_info = 1;
+			flag_recentval = 1;
+			flag_wake_print = 1;
+
+		} else if(strstr((char*)uart6_rx_buffer, "@@") != NULL){
+			flag_set_wifi = 1;
+
+		}
+
+
 		Restart_UART_DMA(&huart6, uart6_rx_buffer, UART6_RX_BUFFER_SIZE);
 	}
 }
@@ -1460,9 +1606,9 @@ void Send_To_ESP32(){
 
 
 	snprintf((char*)esp_tx_buffer, ESP_BUFFER_SIZE,
-			"waktu:%s,latitude:%.5f,longitude:%.5f,suhu:%.1f,kelembaban:%.1f,arah_angin:%.1f,"
+			"ssid:%s,pass:%s,waktu:%s,latitude:%.5f,longitude:%.5f,suhu:%.1f,kelembaban:%.1f,arah_angin:%.1f,"
 			"kecepatan_angin:%.1f,tekanan_udara:%.1f,radiasi_matahari:%.1f,curah_hujan:%.1f,"
-			"water_level:%.1f",
+			"water_level:%.1f",ssid,password,
 			time_display_buffer, Latitude, Longitude, temp_c, humidity_pct, windDir,
 			windSpeed, pressure_mbar, solar_rad, curah_hujan, distance);
 
@@ -1481,14 +1627,19 @@ void Send_To_ESP32(){
 
 void Request_Update_Time_From_ESP32(){
 	OK_Update = 0;
+	OK_send = 0;
+	NEXTION_SendString("waktu0", "Tunggu....");
+	NEXTION_SendString("tgl0", "Tunggu....");
+
 	Restart_UART_DMA(&huart2, esp_rx_buffer, ESP_BUFFER_SIZE);
-	sprintf((char*)esp_tx_buffer, "timeupdate");
+	sprintf((char*)esp_tx_buffer, "timeupdate,ssid:%s,pass:%s", ssid, password);
 	// Mengaktifkan sinyal wake-up jika diperlukan
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
 	HAL_Delay(100);
 	HAL_UART_Transmit(&huart2, esp_tx_buffer, strlen((char*)esp_tx_buffer), 100);
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
 	OK_Update = 1;
+	OK_send = 1;
 
 }
 
@@ -1505,7 +1656,7 @@ void Time_Update_ESP_Helper(){
 				+ (esp_rx_buffer[9]  - '0') * 10   + (esp_rx_buffer[10] - '0');
 		jam   = (esp_rx_buffer[12] - '0') * 10 + (esp_rx_buffer[13] - '0');
 		menit = (esp_rx_buffer[15] - '0') * 10 + (esp_rx_buffer[16] - '0');
-		detik = (esp_rx_buffer[18] - '0') * 10 + (esp_rx_buffer[19] - '0');
+		detik = (esp_rx_buffer[18] - '0') * 10 + (esp_rx_buffer[19] - '0') + 2;
 		Restart_UART_DMA(&huart2, esp_rx_buffer, ESP_BUFFER_SIZE);
 	}
 
@@ -1515,11 +1666,98 @@ void Time_Update_ESP_Helper(){
 	Set_Time_DS3231(detik, menit, jam, 1, tgl, bulan, tahun);
 	Set_Time_Internal_RTC(detik, menit, jam, 1, tgl, bulan, tahun);
 
+	Send_Recent_Time(OK_send);
+
 
 	flag_time_update_esp_helper = 0;
 	OK_Update = 1;
 
 }
+
+void Send_Recent_SSID(void){
+	OK_send = 0;
+	Read_SD("WIFICONF.txt", 1);
+
+	NEXTION_SendString("ssid0", ssid);
+
+	char maskedPassword[64];
+	snprintf(maskedPassword, sizeof(maskedPassword), "%c***%c", password[0], password[3]);
+	NEXTION_SendString("sandi0", maskedPassword);
+
+	flag_ssid_info = 0;
+
+	printf("Send Recent SSID Success\n");
+
+
+
+	OK_send =1;
+}
+
+void Parsing_Wifi_Credentials(){
+    char *start, *end;
+    char delimiter = (char)0xFF;
+
+	uint32_t begin = HAL_GetTick();
+	while (HAL_GetTick() - begin < 5000) {
+		if (strstr((char*)uart6_rx_buffer, "ssid0") != NULL &&
+				strstr((char*)uart6_rx_buffer, "pass0") != NULL) {
+			break;
+		}
+	}
+    // Parsing SSID: ambil substring setelah "ssid0" hingga karakter 'ÿ'
+    start = strstr((char*)uart6_rx_buffer, "ssid0");
+    if(start != NULL)
+    {
+        start += strlen("ssid0");  // Pindah pointer setelah "ssid0"
+        end = strchr(start, delimiter);  // Cari batas "ÿ"
+        if(end != NULL)
+        {
+            size_t len = end - start;
+            if(len < sizeof(ssid))
+            {
+                strncpy(ssid, start, len);
+                ssid[len] = '\0'; // Tambahkan null-terminator
+            }
+        }
+    }else{
+
+    	printf("SSID Null\n");
+
+    }
+
+    // Parsing password: ambil substring setelah "pass0" hingga karakter 'ÿ'
+    start = strstr((char*)uart6_rx_buffer, "pass0");
+    if(start != NULL)
+    {
+        start += strlen("pass0");  // Pindah pointer setelah "pass0"
+        end = strchr(start, delimiter);  // Cari batas "ÿ"
+        if(end != NULL)
+        {
+            size_t len = end - start;
+            if(len < sizeof(password))
+            {
+                strncpy(password, start, len);
+                password[len] = '\0'; // Tambahkan null-terminator
+            }
+        }
+    }else{
+    	printf("Password Null\n");
+    }
+
+    Write_SD("WIFICONF.txt", 1, 1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,ssid,password);
+
+
+    printf("SSID: %s\r\n", ssid);
+    printf("Password: %s\r\n", password);
+
+    Send_Recent_SSID();
+
+
+    flag_set_wifi = 0;
+
+}
+
+
 
 
 #endif
@@ -1636,6 +1874,9 @@ void Disconnect_MQTT(void){
 
 // Fungsi utama untuk mengirim data parameter cuaca ke SIM7600 melalui MQTT
 static int Send_To_SIM7600(void) {
+
+	printf("\nAT+CNMP=38.........");
+	send_command_with_retry("AT+CNMP=38\r\n", "OK", 5000);
 	// 1. Set APN
 	printf("\nAT+CGDCONT=1,\"IP\",\"M2MINTERNET\".........");
 	if (!send_command_with_retry("AT+CGDCONT=1,\"IP\",\"M2MINTERNET\"\r\n", "OK", 10000))
@@ -1726,91 +1967,127 @@ static int Send_To_SIM7600(void) {
 void Request_GPS_Data(void){
 
 
-	if(mode_com!=2)
+	if(mode_com!=2){
+		OK_Update = 0;
+		OK_send = 0;
+		NEXTION_SendString("lat0", "GPS: NULL");
+		NEXTION_SendString("long0", "GPS: NULL");
+		HAL_Delay(1000);
+
+		Send_Recent_Latlong();
+
+		OK_Update = 1;
+		OK_send = 1;
+
+		flag_update_gps = 0;
+
 		return;
-	Wake_SIM7600();
+	}
+
 
 	OK_Update = 0;
 	OK_send = 0;
 
-	NEXTION_SendString("time0", "Akuisisi GPS...");
+	NEXTION_SendString("lat0", "Tunggu....");
+	NEXTION_SendString("long0", "Tunggu....");
 
-	printf("\nAT+CGPS=1,1.........");
-	send_command_with_retry("AT+CGPS=1,1\r\n", "OK", 10000);
+	printf("\nAT+CNMP=38.........");
+	send_command_with_retry("AT+CNMP=38\r\n", "OK", 5000);
 
-	printf("\nAT+CGNSSINFO.........");
-	if(send_command_with_retry_extended("AT+CGNSSINFO\r\n", "E", "W", ",,,,,,,," , 100000)){
+	printf("\nAT+CGDCONT=1,\"IP\",\"M2MINTERNET\".........");
+	send_command_with_retry("AT+CGDCONT=1,\"IP\",\"M2MINTERNET\"\r\n", "OK", 10000);
 
-	    char *dataStr = strstr((char*)sim_rx_buffer, "+CGNSSINFO:");
-	    dataStr += strlen("+CGNSSINFO: ");
-	    HAL_Delay(100);
+	printf("\nAT+CSSLCFG.........");
+	send_command_with_retry("AT+CSSLCFG=\"enableSNI\",0,1\r\n", "OK", 1000);
 
-	    // Variabel untuk token dan penanda indeks token
-	    char *token;
-	    int tokenIndex = 0;
-	    char *latStr = NULL;
-	    char *latDir = NULL;
-	    char *lonStr = NULL;
-	    char *lonDir = NULL;
+	printf("\nAT+CSSLCFG.........");
+	send_command_with_retry("AT+CSSLCFG=\"enableSNI\",0,1\r\n", "OK", 1000);
 
-	    // Tokenisasi berdasarkan koma
-	    token = strtok(dataStr, ",");
-	    while (token != NULL) {
-	        // Berdasarkan format:
-	        // token[0] : nomor mode (misal "2")
-	        // token[1] : "07"
-	        // token[2] : "01"
-	        // token[3] : "02"
-	        // token[4] : Latitude dalam format ddmm.mmmmmm (misal "0739.552730")
-	        // token[5] : Arah latitude (misal "S")
-	        // token[6] : Longitude dalam format dddmm.mmmmmm (misal "11015.669813")
-	        // token[7] : Arah longitude (misal "E")
-	        if (tokenIndex == 4) {
-	            latStr = token;
-	        } else if (tokenIndex == 5) {
-	            latDir = token;
-	        } else if (tokenIndex == 6) {
-	            lonStr = token;
-	        } else if (tokenIndex == 7) {
-	            lonDir = token;
-	        }
-	        token = strtok(NULL, ",");
-	        tokenIndex++;
-	    }
+	uint8_t flag_next_gps_acc = 1;
 
-	    // Pastikan semua data yang diperlukan tersedia
-	    if (latStr && latDir && lonStr && lonDir) {
-	        // Parsing latitude
-	        // Format: ddmm.mmmmmm
-	        float latValue = atof(latStr);
-	        int latDegrees = (int)(latValue / 100);
-	        float latMinutes = latValue - (latDegrees * 100);
-	        float latDecimal = latDegrees + (latMinutes / 60.0f);
-	        // Jika arah adalah 'S', jadikan negatif
-	        if (latDir[0] == 'S' || latDir[0] == 's') {
-	            latDecimal = -latDecimal;
-	        }
-	        Latitude = latDecimal;
+	for(int i = 0; i<2;i++){
 
-	        // Parsing longitude
-	        // Format: dddmm.mmmmmm
-	        float lonValue = atof(lonStr);
-	        int lonDegrees = (int)(lonValue / 100);
-	        float lonMinutes = lonValue - (lonDegrees * 100);
-	        float lonDecimal = lonDegrees + (lonMinutes / 60.0f);
-	        // Jika arah adalah 'W', jadikan negatif
-	        if (lonDir[0] == 'W' || lonDir[0] == 'w') {
-	            lonDecimal = -lonDecimal;
-	        }
-	        Longitude = lonDecimal;
+		printf("\nAT+CGPS=1,1.........");
+		send_command_with_retry("AT+CGPS=1,1\r\n", "OK", 10000);
 
-	    	Write_SD("LOCATION.txt", 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,1,1,
-	    			Latitude, Longitude);
+		printf("\nAT+CGNSSINFO.........");
+		if(send_command_with_retry_extended("AT+CGNSSINFO\r\n", "E", "W", ",,,,,,,," , 100000)){
 
-	    }
+			char *dataStr = strstr((char*)sim_rx_buffer, "+CGNSSINFO:");
+			dataStr += strlen("+CGNSSINFO: ");
+			HAL_Delay(100);
 
+			// Variabel untuk token dan penanda indeks token
+			char *token;
+			int tokenIndex = 0;
+			char *latStr = NULL;
+			char *latDir = NULL;
+			char *lonStr = NULL;
+			char *lonDir = NULL;
 
-	}else{
+			// Tokenisasi berdasarkan koma
+			token = strtok(dataStr, ",");
+			while (token != NULL) {
+				// Berdasarkan format:
+				// token[0] : nomor mode (misal "2")
+				// token[1] : "07"
+				// token[2] : "01"
+				// token[3] : "02"
+				// token[4] : Latitude dalam format ddmm.mmmmmm (misal "0739.552730")
+				// token[5] : Arah latitude (misal "S")
+				// token[6] : Longitude dalam format dddmm.mmmmmm (misal "11015.669813")
+				// token[7] : Arah longitude (misal "E")
+				if (tokenIndex == 4) {
+					latStr = token;
+				} else if (tokenIndex == 5) {
+					latDir = token;
+				} else if (tokenIndex == 6) {
+					lonStr = token;
+				} else if (tokenIndex == 7) {
+					lonDir = token;
+				}
+				token = strtok(NULL, ",");
+				tokenIndex++;
+			}
+
+			// Pastikan semua data yang diperlukan tersedia
+			if (latStr && latDir && lonStr && lonDir) {
+				// Parsing latitude
+				// Format: ddmm.mmmmmm
+				float latValue = atof(latStr);
+				int latDegrees = (int)(latValue / 100);
+				float latMinutes = latValue - (latDegrees * 100);
+				float latDecimal = latDegrees + (latMinutes / 60.0f);
+				// Jika arah adalah 'S', jadikan negatif
+				if (latDir[0] == 'S' || latDir[0] == 's') {
+					latDecimal = -latDecimal;
+				}
+				Latitude = latDecimal;
+
+				// Parsing longitude
+				// Format: dddmm.mmmmmm
+				float lonValue = atof(lonStr);
+				int lonDegrees = (int)(lonValue / 100);
+				float lonMinutes = lonValue - (lonDegrees * 100);
+				float lonDecimal = lonDegrees + (lonMinutes / 60.0f);
+				// Jika arah adalah 'W', jadikan negatif
+				if (lonDir[0] == 'W' || lonDir[0] == 'w') {
+					lonDecimal = -lonDecimal;
+				}
+				Longitude = lonDecimal;
+
+				Write_SD("LOCATION.txt", 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,1,1,
+						Latitude, Longitude,"","");
+
+			}
+
+			flag_next_gps_acc = 0;
+			break;
+		}
+	}
+
+	if(flag_next_gps_acc){
+		flag_next_gps_acc = 0;
 		Get_Time_Internal_RTC();
 		uint8_t new_hour = rtcstm.hour + 4;
 		Set_Alarm_B_Intenal_RTC (new_hour, 11, 35, 1);
@@ -1818,18 +2095,25 @@ void Request_GPS_Data(void){
 
 	printf("\nAT+CGPS=0.........");
 	send_command_with_retry("AT+CGPS=0\r\n", "OK", 10000);
-	NEXTION_SendString("time0", time_display_buffer);
+	Send_Recent_Latlong();
 
 	OK_Update = 1;
 	OK_send = 1;
-	Sleep_SIM7600();
+	flag_update_gps = 0;
 
 }
 
 void Request_Update_Time_From_SIM7600(void)
 {
 	OK_Update = 0;
-	Wake_SIM7600();
+	OK_send = 0;
+
+	NEXTION_SendString("waktu0", "Tunggu....");
+	NEXTION_SendString("tgl0", "Tunggu....");
+
+
+	printf("\nAT+CNMP=38.........");
+	send_command_with_retry("AT+CNMP=38\r\n", "OK", 5000);
 
 	printf("\nAT+CGDCONT=1,\"IP\",\"M2MINTERNET\".........");
 	send_command_with_retry("AT+CGDCONT=1,\"IP\",\"M2MINTERNET\"\r\n", "OK", 10000);
@@ -1877,7 +2161,7 @@ void Request_Update_Time_From_SIM7600(void)
 					+ (pDate[2]  - '0') * 10   + (pDate[3] - '0');
 			jam   = (pDate[13] - '0') * 10 + (pDate[14] - '0');
 			menit = (pDate[16] - '0') * 10 + (pDate[17] - '0');
-			detik = (pDate[19] - '0') * 10 + (pDate[20] - '0');
+			detik = (pDate[19] - '0') * 10 + (pDate[20] - '0') + 2;
 
 			printf("Tanggal: %02d-%02d-%04d\n", tgl, bulan, tahun);
 			printf("Waktu: %02d:%02d:%02d\n", jam, menit, detik);
@@ -1900,44 +2184,53 @@ void Request_Update_Time_From_SIM7600(void)
 
 	Restart_UART_DMA(&huart4, sim_rx_buffer, SIM_BUFFER_SIZE);
 
+	Send_Recent_Time(OK_send);
+
 	OK_Update = 1;
-	Sleep_SIM7600();
+	OK_send = 1;
+}
+
+static int SIM7600_Ready(void){
+	printf("\nAT.........");
+	if(!send_command_with_retry("AT\r\n", "OK", 10000)){
+		return 0;
+		NVIC_SystemReset();
+	}
+
+	return 1;
+
 }
 
 
-void Power_ON_SIM7600(void){
-	printf("Power ON - SIM7600\n");
-	HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_RESET);
-	HAL_Delay(600);
-	HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_SET);
-}
-
-void Power_OFF_SIM7600(void){
-	printf("Power OFF - SIM7600\n");
-	HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_RESET);
-	HAL_Delay(3000);
-	HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_SET);
-}
 
 void Wake_SIM7600(void){
-	printf("\nWake Up - SIM7600");
-	printf("\nAT+CSCLK=0.........");
-	if (!send_command_with_retry("AT+CSCLK=0\r\n", "OK", 1000))
-		return;
 	HAL_GPIO_WritePin(GPIOE, GPIO_PIN_2, GPIO_PIN_RESET);
 	HAL_Delay(200);
+	printf("\nWake Up - SIM7600");
+	printf("\nAT+CSCLK=0.........");
+	send_command_with_retry("AT+CSCLK=0\r\n", "OK", 1000);
+
+	printf("\nAT+CFUN=1.........");
+	send_command_with_retry("AT+CFUN=1\r\n", "OK", 1000);
+
 }
 
 void Sleep_SIM7600(void){
 	printf("\nEnter Sleep - SIM7600");
+
 	printf("\nAT+CSCLK=1.........");
-	if (!send_command_with_retry("AT+CSCLK=1\r\n", "OK", 1000))
-		return;
+	send_command_with_retry("AT+CSCLK=1\r\n", "OK", 1000);
+
+	printf("\nAT+CFUN=0.........");
+	send_command_with_retry("AT+CFUN=0\r\n", "OK", 1000);
+
 
 	HAL_Delay(200);
 	HAL_GPIO_WritePin(GPIOE, GPIO_PIN_2, GPIO_PIN_SET);
 
 }
+
+
 
 #endif
 
@@ -1947,13 +2240,27 @@ void Sleep_SIM7600(void){
 
 void Communication_Init(void){
 	if(mode_com==1){
+		NEXTION_SendString("time0", "ESP32 INIT");
 		ESP_INIT();
-		Power_OFF_SIM7600();
+		if(!already_on){
+			SIM7600_Ready();
+		}
+		Sleep_SIM7600();
+
 
 	}else if(mode_com==2){
-		Power_ON_SIM7600();
+		NEXTION_SendString("time0", "SIM7600 INIT");
+		if(already_on){
+			Wake_SIM7600();
+		}
+
+
 
 	}
+	HAL_Delay(500);
+
+	NEXTION_SendString("t0", "Pembaruan Terakhir");
+	NEXTION_SendString("time0", time_display_buffer);
 }
 
 
@@ -2023,6 +2330,7 @@ int main(void)
 	Initial_Interval(interval);
 	Set_Alarm_B_Intenal_RTC (8, 11, 35, 1);
 	Communication_Init();
+	already_on = 1;
 
 
 
@@ -2034,65 +2342,134 @@ int main(void)
   /* USER CODE BEGIN WHILE */
 	while (1)
 	{
-		HAL_SuspendTick();
-		HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
-		HAL_ResumeTick();
+
+		if (flag_periodic_meas) {
+			Send_Update_Val(OK_Update);
+			Initial_Interval(interval);
+			continue;
+		}
+
 
 		if (flag_tipp)
 		{
 			Read_RK400(curah_hujan, OK_send);
 			flag_tipp = 0;
+			continue;
 		}
+
+		if (flag_update) {
+			flag_update = 0;
+			Send_Update_Val(OK_Update);
+			continue;
+		}
+
 
 		if (flag_reset) {
 			Set_Config_Default();
+			continue;
 		}
 
-		if (flag_periodic_meas) {
-			Send_Update_Val(OK_Update);
-			Initial_Interval(interval);
-
-		}
 		if (flag_interval) {
 			Capture_Choosed_Interval(mode_interval, OK_send);
+			continue;
 		}
+
 		if (flag_com) {
 			Capture_Choosed_Comm(mode_com, OK_send);
+			continue;
 		}
+
 		if (flag_apply) {
 			Set_Apply(flag_apply, mode_interval, mode_com);
+			continue;
 		}
+
 		if (flag_recentval) {
 			Send_Recent_Val();
+			continue;
 		}
+
 		if(flag_delete){
 
 			Delete_File("MEASURE.txt");
 			Delete_File("LASTVAL.txt");
 			Delete_File("LOCATION.txt");
+			continue;
 
 		}
+
 		if(flag_periodic_request_time_update){
 			flag_periodic_request_time_update = 0;
 			if (mode_com==1){
 				Request_Update_Time_From_ESP32();
 			}
 			if (mode_com==2){
-				Request_GPS_Data();
+				Request_Update_Time_From_SIM7600();
+			}
+			continue;
+
+		}
+
+		if(flag_time_update_esp_helper){
+			Time_Update_ESP_Helper();
+			continue;
+		}
+
+
+		if(flag_recent_time){
+			Send_Recent_Time(OK_send);
+		}
+
+		if(flag_recent_latlong){
+			Send_Recent_Latlong();
+			continue;
+		}
+
+		if(flag_update_gps){
+			Request_GPS_Data();
+			continue;
+		}
+
+		if(flag_timeupdate_only){
+			flag_timeupdate_only=0;
+
+			if (mode_com==1){
+				Request_Update_Time_From_ESP32();
+			}
+			if (mode_com==2){
 				Request_Update_Time_From_SIM7600();
 			}
 
-		}
-		if(flag_time_update_esp_helper){
-			Time_Update_ESP_Helper();
-		}
-
-		if (flag_update) {
-			flag_update = 0;
-			Send_Update_Val(OK_Update);
-			Request_GPS_Data();
+			continue;
 
 		}
+
+		if(flag_set_wifi){
+			Parsing_Wifi_Credentials();
+			continue;
+		}
+
+		if(flag_ssid_info){
+			Send_Recent_SSID();
+			continue;
+		}
+
+		if(flag_wake_print){
+			flag_wake_print = 0;
+			printf("STM32: Wake\n");
+			continue;
+		}
+
+		if(flag_sleep){
+			printf("STM32: Sleep\n");
+			HAL_Delay(100);
+			HAL_SuspendTick();
+			HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
+			HAL_ResumeTick();
+			continue;
+		}
+
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -2618,19 +2995,12 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(CTRL_485_GPIO_Port, CTRL_485_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : MODEM_SLEEP_Pin WQ_CS_Pin */
-  GPIO_InitStruct.Pin = MODEM_SLEEP_Pin|WQ_CS_Pin;
+  /*Configure GPIO pins : MODEM_SLEEP_Pin MODEM_PWR_KEY_Pin WQ_CS_Pin */
+  GPIO_InitStruct.Pin = MODEM_SLEEP_Pin|MODEM_PWR_KEY_Pin|WQ_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : MODEM_PWR_KEY_Pin */
-  GPIO_InitStruct.Pin = MODEM_PWR_KEY_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(MODEM_PWR_KEY_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : EXT0_ESP32_Pin */
   GPIO_InitStruct.Pin = EXT0_ESP32_Pin;
