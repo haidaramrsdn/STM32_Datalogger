@@ -116,6 +116,9 @@ void Sleep_SIM7600(void);
 #define HR65_ADDR                  0x01
 #define HR65_START                 0x0001
 
+#define PYR20_ADDR                  0x06
+#define PYR20_START                 0x0001
+
 #define RK900_ADDR                 0x08
 #define RK900_START                0x0005
 
@@ -132,6 +135,9 @@ void Sleep_SIM7600(void);
 
 #define HR65_REQUIRED_STABLE_COUNT     3
 #define HR65_TOL_DISTANCE              5.0f
+
+#define PYR20_REQUIRED_STABLE_COUNT     3
+#define	PYR20_TOL_RAD				   5.0f
 
 
 /* --- Buffer Global --- */
@@ -1072,16 +1078,50 @@ void Read_HR65(void) {
  */
 volatile uint8_t PYR20_Valid=1;
 void Read_PYR20(void) {
-	// Inisialisasi srand hanya sekali, lebih baik di main() atau inisialisasi
-	static int initialized = 0;
-	if (!initialized) {
-		srand(time(NULL));  // Inisialisasi seed hanya sekali
-		initialized = 1;
+	printf("====== Progress: Read PYR20 (Stable Value) ======\n");
+
+	uint8_t attempt = 0;
+	uint8_t stable_count = 0;
+	float previous_radiation = 0.0f, current_radiation = 0.0f;
+
+	PYR20_Valid = 0;
+
+	for (attempt = 0; attempt < 10; attempt++) {
+		modbus_send_command(PYR20_ADDR, 0x03, PYR20_START, 0x0001);
+		HAL_Delay(50);
+
+		if (modbus_rx_buffer[0] == PYR20_ADDR) {
+			current_radiation = parse_uint16_be(modbus_rx_buffer, 3) / 1.0f;
+
+			if (attempt == 0) {
+				previous_radiation = current_radiation;
+				stable_count = 1;
+			} else {
+				if (fabs(current_radiation - previous_radiation) < PYR20_TOL_RAD) {
+					stable_count++;
+				} else {
+					stable_count = 1;
+				}
+				previous_radiation = current_radiation;
+			}
+
+			if (stable_count >= PYR20_REQUIRED_STABLE_COUNT) {
+				solar_rad = current_radiation;
+				PYR20_Valid = 1;
+				break;
+			}
+		} else {
+			distance = 9999.9;
+			stable_count = 0;
+			PYR20_Valid = 0;
+		}
+		Restart_UART_DMA(&huart3, modbus_rx_buffer, MODBUS_BUFFER_SIZE);
+		HAL_Delay(10);
 	}
 
-	solar_rad = ((rand() % 16001) + 4000) / 10.0;  // Menghasilkan angka acak dalam range 400.0 - 2000.0
+	printf(PYR20_Valid ? "PYR20 Success\n" : "PYR20 Fail\n");
+	modbus_status = HAL_ERROR;
 }
-
 
 /**
  * @brief Membaca data sensor  SHT20
@@ -1122,7 +1162,7 @@ void Read_SHT20(void) {
 #endif
 
 /**
- * @brief Menghitung curah hujan dari jumlah “tip count�? dan menampilkan hasil ke Nextion.
+ * @brief Menghitung curah hujan dari jumlah “tip count? dan menampilkan hasil ke Nextion.
  */
 void Read_RK400(float ch, uint8_t proceed) {
 	if (proceed) {
@@ -1208,38 +1248,40 @@ void Set_Apply(uint8_t apply_1, uint8_t inval, uint8_t comm) {
 /**
  * @brief Mengirim seluruh nilai terkini ke Nextion.
  */
-void Send_Recent_Val(void) {
+void Send_Recent_Val(uint8_t proceed) {
 
-	Read_SD("Config.txt", OK_send);
-	switch (mode_interval) {
-	case 1: NEXTION_SendString("interval0", "60"); break;
-	case 2: NEXTION_SendString("interval0", "300"); break;
-	case 3: NEXTION_SendString("interval0", "600"); break;
-	case 4: NEXTION_SendString("interval0", "1800"); break;
-	default: break;
+	if(proceed){
+		Read_SD("Config.txt", OK_send);
+		switch (mode_interval) {
+		case 1: NEXTION_SendString("interval0", "60"); break;
+		case 2: NEXTION_SendString("interval0", "300"); break;
+		case 3: NEXTION_SendString("interval0", "600"); break;
+		case 4: NEXTION_SendString("interval0", "1800"); break;
+		default: break;
+		}
+		switch (mode_com) {
+		case 1: NEXTION_SendString("com0", "Wi-Fi"); break;
+		case 2: NEXTION_SendString("com0", "LTE"); break;
+		default: break;
+		}
+
+		NEXTION_SendString("micsd0", space_info);
+
+		NEXTION_SendString("t0", "Pembaruan Terakhir");
+		NEXTION_SendString("time0", time_display_buffer);
+		NEXTION_SendFloat("ch0", curah_hujan);
+		NEXTION_SendFloat("winds0", windSpeed);
+		NEXTION_SendFloat("windd0", windDir);
+		NEXTION_SendFloat("suhu0", temp_c);
+		NEXTION_SendFloat("rh0", humidity_pct);
+		NEXTION_SendFloat("press0", pressure_mbar);
+		NEXTION_SendFloat("water0", distance);
+		NEXTION_SendFloat("sunrad0", solar_rad);
+
+
+		printf("Send Recent Val Success\n");
+		flag_recentval = 0;
 	}
-	switch (mode_com) {
-	case 1: NEXTION_SendString("com0", "Wi-Fi"); break;
-	case 2: NEXTION_SendString("com0", "LTE"); break;
-	default: break;
-	}
-
-	NEXTION_SendString("micsd0", space_info);
-
-	NEXTION_SendString("t0", "Pembaruan Terakhir");
-	NEXTION_SendString("time0", time_display_buffer);
-	NEXTION_SendFloat("ch0", curah_hujan);
-	NEXTION_SendFloat("winds0", windSpeed);
-	NEXTION_SendFloat("windd0", windDir);
-	NEXTION_SendFloat("suhu0", temp_c);
-	NEXTION_SendFloat("rh0", humidity_pct);
-	NEXTION_SendFloat("press0", pressure_mbar);
-	NEXTION_SendFloat("water0", distance);
-	NEXTION_SendFloat("sunrad0", solar_rad);
-
-
-	printf("Send Recent Val Success\n");
-	flag_recentval = 0;
 }
 
 /**
@@ -2000,8 +2042,6 @@ void Request_GPS_Data(void){
 	printf("\nAT+CSSLCFG.........");
 	send_command_with_retry("AT+CSSLCFG=\"enableSNI\",0,1\r\n", "OK", 1000);
 
-	printf("\nAT+CSSLCFG.........");
-	send_command_with_retry("AT+CSSLCFG=\"enableSNI\",0,1\r\n", "OK", 1000);
 
 	uint8_t flag_next_gps_acc = 1;
 
@@ -2082,8 +2122,15 @@ void Request_GPS_Data(void){
 			}
 
 			flag_next_gps_acc = 0;
+			printf("\nAT+CGPS=0.........");
+			send_command_with_retry("AT+CGPS=0\r\n", "OK", 10000);
+			Send_Recent_Latlong();
 			break;
 		}
+
+		printf("\nAT+CGPS=0.........");
+		send_command_with_retry("AT+CGPS=0\r\n", "OK", 10000);
+		Send_Recent_Latlong();
 	}
 
 	if(flag_next_gps_acc){
@@ -2093,9 +2140,7 @@ void Request_GPS_Data(void){
 		Set_Alarm_B_Intenal_RTC (new_hour, 11, 35, 1);
 	}
 
-	printf("\nAT+CGPS=0.........");
-	send_command_with_retry("AT+CGPS=0\r\n", "OK", 10000);
-	Send_Recent_Latlong();
+
 
 	OK_Update = 1;
 	OK_send = 1;
@@ -2385,7 +2430,7 @@ int main(void)
 		}
 
 		if (flag_recentval) {
-			Send_Recent_Val();
+			Send_Recent_Val(OK_send);
 			continue;
 		}
 
