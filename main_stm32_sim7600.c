@@ -439,7 +439,7 @@ void HAL_RTCEx_AlarmBEventCallback(RTC_HandleTypeDef *hrtc)
 void Update_Time_Buffer(){
 	Get_Time_Internal_RTC();
 	snprintf(time_display_buffer, sizeof(time_display_buffer),
-			"%02d/%02d/%04d  %02d.%02d.%02d",
+			"%02d/%02d/%04d  %02d:%02d:%02d",
 			rtcstm.dayofmonth, rtcstm.month, 2000 + rtcstm.year,
 			rtcstm.hour, rtcstm.minutes, rtcstm.seconds);
 }
@@ -1111,7 +1111,7 @@ void Read_PYR20(void) {
 				break;
 			}
 		} else {
-			distance = 9999.9;
+			solar_rad = 9999.9;
 			stable_count = 0;
 			PYR20_Valid = 0;
 		}
@@ -1352,7 +1352,6 @@ void Send_Update_Val(uint8_t Acc) {
 		Read_RK400(curah_hujan, 1);
 		Read_HR65();
 		Read_RK900();
-		Read_SHT20();
 		Read_PYR20();
 
 		Read_SD("LOCATION.txt", 1);
@@ -1360,7 +1359,6 @@ void Send_Update_Val(uint8_t Acc) {
 		Read_SD("WIFICONF.txt", 1);
 
 
-		RK900_Valid = 1;
 		if (RK900_Valid) {
 			NEXTION_SendFloat("winds0", windSpeed);
 			NEXTION_SendFloat("windd0", windDir);
@@ -1376,8 +1374,6 @@ void Send_Update_Val(uint8_t Acc) {
 		}
 
 
-		distance = 9999.9;
-		HR65_Valid =1;
 
 		if (HR65_Valid) {
 			NEXTION_SendFloat("water0", distance);
