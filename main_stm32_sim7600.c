@@ -2041,98 +2041,95 @@ void Request_GPS_Data(void){
 
 	uint8_t flag_next_gps_acc = 1;
 
-	for(int i = 0; i<2;i++){
 
-		printf("\nAT+CGPS=1,1.........");
-		send_command_with_retry("AT+CGPS=1,1\r\n", "OK", 10000);
 
-		printf("\nAT+CGNSSINFO.........");
-		if(send_command_with_retry_extended("AT+CGNSSINFO\r\n", "E", "W", ",,,,,,,," , 100000)){
+	printf("\nAT+CGPS=1,1.........");
+	send_command_with_retry("AT+CGPS=1,1\r\n", "OK", 10000);
 
-			char *dataStr = strstr((char*)sim_rx_buffer, "+CGNSSINFO:");
-			dataStr += strlen("+CGNSSINFO: ");
-			HAL_Delay(100);
+	printf("\nAT+CGNSSINFO.........");
+	if(send_command_with_retry_extended("AT+CGNSSINFO\r\n", "E", "W", ",,,,,,,," , 100000)){
 
-			// Variabel untuk token dan penanda indeks token
-			char *token;
-			int tokenIndex = 0;
-			char *latStr = NULL;
-			char *latDir = NULL;
-			char *lonStr = NULL;
-			char *lonDir = NULL;
+		char *dataStr = strstr((char*)sim_rx_buffer, "+CGNSSINFO:");
+		dataStr += strlen("+CGNSSINFO: ");
+		HAL_Delay(100);
 
-			// Tokenisasi berdasarkan koma
-			token = strtok(dataStr, ",");
-			while (token != NULL) {
-				// Berdasarkan format:
-				// token[0] : nomor mode (misal "2")
-				// token[1] : "07"
-				// token[2] : "01"
-				// token[3] : "02"
-				// token[4] : Latitude dalam format ddmm.mmmmmm (misal "0739.552730")
-				// token[5] : Arah latitude (misal "S")
-				// token[6] : Longitude dalam format dddmm.mmmmmm (misal "11015.669813")
-				// token[7] : Arah longitude (misal "E")
-				if (tokenIndex == 4) {
-					latStr = token;
-				} else if (tokenIndex == 5) {
-					latDir = token;
-				} else if (tokenIndex == 6) {
-					lonStr = token;
-				} else if (tokenIndex == 7) {
-					lonDir = token;
-				}
-				token = strtok(NULL, ",");
-				tokenIndex++;
+		// Variabel untuk token dan penanda indeks token
+		char *token;
+		int tokenIndex = 0;
+		char *latStr = NULL;
+		char *latDir = NULL;
+		char *lonStr = NULL;
+		char *lonDir = NULL;
+
+		// Tokenisasi berdasarkan koma
+		token = strtok(dataStr, ",");
+		while (token != NULL) {
+			// Berdasarkan format:
+			// token[0] : nomor mode (misal "2")
+			// token[1] : "07"
+			// token[2] : "01"
+			// token[3] : "02"
+			// token[4] : Latitude dalam format ddmm.mmmmmm (misal "0739.552730")
+			// token[5] : Arah latitude (misal "S")
+			// token[6] : Longitude dalam format dddmm.mmmmmm (misal "11015.669813")
+			// token[7] : Arah longitude (misal "E")
+			if (tokenIndex == 4) {
+				latStr = token;
+			} else if (tokenIndex == 5) {
+				latDir = token;
+			} else if (tokenIndex == 6) {
+				lonStr = token;
+			} else if (tokenIndex == 7) {
+				lonDir = token;
 			}
-
-			// Pastikan semua data yang diperlukan tersedia
-			if (latStr && latDir && lonStr && lonDir) {
-				// Parsing latitude
-				// Format: ddmm.mmmmmm
-				float latValue = atof(latStr);
-				int latDegrees = (int)(latValue / 100);
-				float latMinutes = latValue - (latDegrees * 100);
-				float latDecimal = latDegrees + (latMinutes / 60.0f);
-				// Jika arah adalah 'S', jadikan negatif
-				if (latDir[0] == 'S' || latDir[0] == 's') {
-					latDecimal = -latDecimal;
-				}
-				Latitude = latDecimal;
-
-				// Parsing longitude
-				// Format: dddmm.mmmmmm
-				float lonValue = atof(lonStr);
-				int lonDegrees = (int)(lonValue / 100);
-				float lonMinutes = lonValue - (lonDegrees * 100);
-				float lonDecimal = lonDegrees + (lonMinutes / 60.0f);
-				// Jika arah adalah 'W', jadikan negatif
-				if (lonDir[0] == 'W' || lonDir[0] == 'w') {
-					lonDecimal = -lonDecimal;
-				}
-				Longitude = lonDecimal;
-
-				Write_SD("LOCATION.txt", 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,1,1,
-						Latitude, Longitude,"","");
-
-			}
-
-			flag_next_gps_acc = 0;
-			printf("\nAT+CGPS=0.........");
-			send_command_with_retry("AT+CGPS=0\r\n", "OK", 10000);
-			Send_Recent_Latlong();
-			break;
+			token = strtok(NULL, ",");
+			tokenIndex++;
 		}
 
-		printf("\nAT+CGPS=0.........");
-		send_command_with_retry("AT+CGPS=0\r\n", "OK", 10000);
-		Send_Recent_Latlong();
+		// Pastikan semua data yang diperlukan tersedia
+		if (latStr && latDir && lonStr && lonDir) {
+			// Parsing latitude
+			// Format: ddmm.mmmmmm
+			float latValue = atof(latStr);
+			int latDegrees = (int)(latValue / 100);
+			float latMinutes = latValue - (latDegrees * 100);
+			float latDecimal = latDegrees + (latMinutes / 60.0f);
+			// Jika arah adalah 'S', jadikan negatif
+			if (latDir[0] == 'S' || latDir[0] == 's') {
+				latDecimal = -latDecimal;
+			}
+			Latitude = latDecimal;
+
+			// Parsing longitude
+			// Format: dddmm.mmmmmm
+			float lonValue = atof(lonStr);
+			int lonDegrees = (int)(lonValue / 100);
+			float lonMinutes = lonValue - (lonDegrees * 100);
+			float lonDecimal = lonDegrees + (lonMinutes / 60.0f);
+			// Jika arah adalah 'W', jadikan negatif
+			if (lonDir[0] == 'W' || lonDir[0] == 'w') {
+				lonDecimal = -lonDecimal;
+			}
+			Longitude = lonDecimal;
+
+			Write_SD("LOCATION.txt", 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,1,1,
+					Latitude, Longitude,"","");
+
+		}
+
+		flag_next_gps_acc = 0;
+
 	}
+
+	printf("\nAT+CGPS=0.........");
+	send_command_with_retry("AT+CGPS=0\r\n", "OK", 10000);
+	Send_Recent_Latlong();
+
 
 	if(flag_next_gps_acc){
 		flag_next_gps_acc = 0;
 		Get_Time_Internal_RTC();
-		uint8_t new_hour = rtcstm.hour + 4;
+		uint8_t new_hour = rtcstm.hour + 1;
 		Set_Alarm_B_Intenal_RTC (new_hour, 11, 35, 1);
 	}
 
