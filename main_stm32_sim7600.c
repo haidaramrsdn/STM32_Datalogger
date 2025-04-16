@@ -2119,6 +2119,8 @@ void Request_GPS_Data(void){
 
 		flag_next_gps_acc = 0;
 
+		Set_Alarm_B_Intenal_RTC (8, 11, 35, 1);
+
 	}
 
 	printf("\nAT+CGPS=0.........");
@@ -2130,6 +2132,9 @@ void Request_GPS_Data(void){
 		flag_next_gps_acc = 0;
 		Get_Time_Internal_RTC();
 		uint8_t new_hour = rtcstm.hour + 1;
+		if (new_hour >=24){
+			new_hour-=24;
+		}
 		Set_Alarm_B_Intenal_RTC (new_hour, 11, 35, 1);
 	}
 
