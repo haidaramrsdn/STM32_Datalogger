@@ -218,6 +218,8 @@ void processReceived(String received) {
       token = received.substring(start, commaIndex);
     }
     token.trim();
+
+
     if (token.length() > 0) {
       // Jika token adalah perintah timeupdate
       if (token.equals("timeupdate")) {
@@ -257,7 +259,6 @@ void processReceived(String received) {
   }
 }
 
-// ===================== Task untuk Event UART =====================
 void uart_event_task(void *pvParameters) {
   QueueHandle_t local_uart_queue = *(QueueHandle_t *)pvParameters;
   uart_event_t event;
@@ -267,6 +268,9 @@ void uart_event_task(void *pvParameters) {
     vTaskDelete(NULL);
   }
   
+  // Buffer untuk menggabungkan data yang diterima
+  static String incomingBuffer = "";
+  
   for (;;) {
     memset(data_buffer, 0, UART_BUF_SIZE);
     if (xQueueReceive(local_uart_queue, (void *)&event, portMAX_DELAY)) {
@@ -274,18 +278,23 @@ void uart_event_task(void *pvParameters) {
         case UART_DATA: {
           int len = uart_read_bytes(UART_PORT_NUM, data_buffer, event.size, pdMS_TO_TICKS(100));
           if (len > 0) {
-            Serial.print("Data diterima: ");
-            Serial.write(data_buffer, len);
-            Serial.println();
-            
-            String received = String((char*)data_buffer, len);
-            received.trim();
-            processReceived(received);
-            
-            // Reset timer inaktivitas
-            if (inactivity_timer != NULL) {
-              if (xTimerReset(inactivity_timer, 0) != pdPASS) {
-                Serial.println("Gagal mereset timer inaktivitas");
+            incomingBuffer += String((char*)data_buffer, len);
+            int newLineIndex;
+            // Proses data per baris
+            while ((newLineIndex = incomingBuffer.indexOf('\n')) != -1) {
+              String line = incomingBuffer.substring(0, newLineIndex);
+              incomingBuffer = incomingBuffer.substring(newLineIndex + 1);
+              line.trim();
+              if (line.length() > 0) {
+                Serial.print("Baris lengkap diterima: ");
+                Serial.println(line);
+                processReceived(line);
+                // Reset timer inaktivitas
+                if (inactivity_timer != NULL) {
+                  if (xTimerReset(inactivity_timer, 0) != pdPASS) {
+                    Serial.println("Gagal mereset timer inaktivitas");
+                  }
+                }
               }
             }
           }
@@ -316,6 +325,7 @@ void uart_event_task(void *pvParameters) {
   free(data_buffer);
   vTaskDelete(NULL);
 }
+
 
 // ===================== Deep Sleep =====================
 void enter_deep_sleep() {
@@ -400,4 +410,3 @@ void loop() {
   
   delay(10);
 }
-
