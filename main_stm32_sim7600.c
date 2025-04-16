@@ -1644,11 +1644,13 @@ void Send_To_ESP32(){
 
 
 	snprintf((char*)esp_tx_buffer, ESP_BUFFER_SIZE,
-			"ssid:%s,pass:%s,waktu:%s,latitude:%.5f,longitude:%.5f,suhu:%.1f,kelembaban:%.1f,arah_angin:%.1f,"
-			"kecepatan_angin:%.1f,tekanan_udara:%.1f,radiasi_matahari:%.1f,curah_hujan:%.1f,"
-			"water_level:%.1f",ssid,password,
-			time_display_buffer, Latitude, Longitude, temp_c, humidity_pct, windDir,
-			windSpeed, pressure_mbar, solar_rad, curah_hujan, distance);
+	    "ssid:%s,pass:%s,waktu:%s,latitude:%.5f,longitude:%.5f,suhu:%.1f,kelembaban:%.1f,arah_angin:%.1f,"
+	    "kecepatan_angin:%.1f,tekanan_udara:%.1f,radiasi_matahari:%.1f,curah_hujan:%.1f,"
+	    "water_level:%.1f\n",  // <-- Perhatikan penambahan karakter newline \n
+	    ssid, password,
+	    time_display_buffer, Latitude, Longitude, temp_c, humidity_pct, windDir,
+	    windSpeed, pressure_mbar, solar_rad, curah_hujan, distance);
+
 
 
 	// Mengaktifkan sinyal wake-up jika diperlukan
@@ -1670,7 +1672,7 @@ void Request_Update_Time_From_ESP32(){
 	NEXTION_SendString("tgl0", "Tunggu....");
 
 	Restart_UART_DMA(&huart2, esp_rx_buffer, ESP_BUFFER_SIZE);
-	sprintf((char*)esp_tx_buffer, "timeupdate,ssid:%s,pass:%s", ssid, password);
+	sprintf((char*)esp_tx_buffer, "timeupdate,ssid:%s,pass:%s\n", ssid, password);
 	// Mengaktifkan sinyal wake-up jika diperlukan
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
 	HAL_Delay(100);
